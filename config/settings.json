@@ -1,0 +1,7 @@
+{
+  "default_profile": "standard",
+  "reports_dir": "reports",
+  "max_workers": 4,
+  "scope_required": true,
+  "allowed_profiles": ["passive", "standard", "full"]
+}

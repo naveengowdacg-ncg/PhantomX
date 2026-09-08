@@ -1,0 +1,40 @@
+{
+  "tools": [
+    {
+      "name": "nmap",
+      "category": "recon",
+      "executable": "nmap",
+      "args": ["-sV", "{target}"],
+      "enabled": true,
+      "timeout": 180,
+      "description": "Network discovery, port and service detection"
+    },
+    {
+      "name": "whatweb",
+      "category": "web",
+      "executable": "whatweb",
+      "args": ["{target}"],
+      "enabled": true,
+      "timeout": 120,
+      "description": "Web technology fingerprinting"
+    },
+    {
+      "name": "nikto",
+      "category": "web",
+      "executable": "nikto",
+      "args": ["-h", "{target}"],
+      "enabled": true,
+      "timeout": 180,
+      "description": "Web server security assessment"
+    },
+    {
+      "name": "nuclei",
+      "category": "vuln",
+      "executable": "nuclei",
+      "args": ["-u", "{target}", "-jsonl"],
+      "enabled": true,
+      "timeout": 300,
+      "description": "Template-based vulnerability detection"
+    }
+  ]
+}
