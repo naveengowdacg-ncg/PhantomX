@@ -257,12 +257,14 @@ class WorkflowEngine:
                 )
 
                 result = self._run_tool_with_loading(
-                    whatweb,
-                    endpoint.url,
+                whatweb,
+                endpoint.url,
                 )
 
-                # Preserve the endpoint context.
                 result.endpoints.append(endpoint)
+
+                for observation in result.observations:
+                    observation.endpoint = endpoint
 
                 session.results.append(result)
 
