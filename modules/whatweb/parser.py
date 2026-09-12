@@ -6,11 +6,18 @@ from core.models import Observation
 class WhatWebParser:
     """Parse WhatWeb output into standardized observations."""
 
+    ANSI_ESCAPE = re.compile(
+        r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
+    )
+
     def parse(self, output, target):
         observations = []
 
         if not output:
             return observations
+
+        # Remove terminal formatting/color codes produced by WhatWeb.
+        output = self.ANSI_ESCAPE.sub("", output)
 
         for line in output.splitlines():
 
@@ -19,7 +26,6 @@ class WhatWebParser:
             if not line:
                 continue
 
-            # WhatWeb output normally starts with the URL.
             match = re.match(
                 r"^(https?://[^\s]+)\s+\[(\d{3})\s+[^\]]+\]\s*(.*)$",
                 line
