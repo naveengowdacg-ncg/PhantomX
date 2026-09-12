@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlparse
+import sys
+import threading
+import time
 
 from core.models import Endpoint
 
@@ -38,6 +40,44 @@ class WorkflowEngine:
         self.logger = logger
         self.max_workers = max_workers
 
+    def _show_loading(self, message, stop_event):
+        """Display a simple loading spinner while a tool is running."""
+        spinner = ["|", "/", "-", "\\"]
+        index = 0
+
+        while not stop_event.is_set():
+            sys.stdout.write(
+                f"\r{message} {spinner[index % len(spinner)]}"
+            )
+            sys.stdout.flush()
+
+            index += 1
+            time.sleep(0.15)
+
+        sys.stdout.write("\r" + " " * (len(message) + 2) + "\r")
+        sys.stdout.flush()
+
+    def _run_tool_with_loading(self, tool, target):
+        """Run a tool while displaying a live loading indicator."""
+        stop_event = threading.Event()
+
+        loading_thread = threading.Thread(
+            target=self._show_loading,
+            args=(
+                f"Running {tool['name']} against {target}...",
+                stop_event,
+            ),
+            daemon=True,
+        )
+
+        loading_thread.start()
+
+        try:
+            return self._run_tool(tool, target)
+        finally:
+            stop_event.set()
+            loading_thread.join()
+    
     def tools_for_profile(self, profile):
         categories = self.PROFILES[profile]
 
@@ -148,7 +188,7 @@ class WorkflowEngine:
 
                 futures = {
                     pool.submit(
-                        self._run_tool,
+                        self._run_tool_with_loading,
                         tool,
                         session.target,
                     ): tool
@@ -216,7 +256,7 @@ class WorkflowEngine:
                     endpoint.url,
                 )
 
-                result = self._run_tool(
+                result = self._run_tool_with_loading(
                     whatweb,
                     endpoint.url,
                 )
@@ -262,7 +302,7 @@ class WorkflowEngine:
 
                         futures[
                             pool.submit(
-                                self._run_tool,
+                                self._run_tool_with_loading,
                                 tool,
                                 endpoint.url,
                             )

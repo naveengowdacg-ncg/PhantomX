@@ -1,4 +1,7 @@
 import shlex
+import sys
+import threading
+import time
 
 from core.adapter_manager import AdapterManager
 from core.executor import ToolExecutor
@@ -23,6 +26,40 @@ BANNER = r"""
 
 
 class App:
+    def show_loading(self, message, stop_event):
+        """Display a simple live spinner while an operation is running."""
+        spinner = ["|", "/", "-", "\\"]
+        index = 0
+
+        while not stop_event.is_set():
+            sys.stdout.write(
+                f"\r{message} {spinner[index % len(spinner)]}"
+            )
+            sys.stdout.flush()
+
+            index += 1
+            time.sleep(0.15)
+
+        sys.stdout.write("\r" + " " * (len(message) + 2) + "\r")
+        sys.stdout.flush()
+
+    def run_with_loading(self, message, function):
+        """Run a function while displaying a live loading indicator."""
+        stop_event = threading.Event()
+
+        loading_thread = threading.Thread(
+            target=self.show_loading,
+            args=(message, stop_event),
+            daemon=True
+        )
+
+        loading_thread.start()
+
+        try:
+            return function()
+        finally:
+            stop_event.set()
+            loading_thread.join()
 
     def __init__(self):
         self.registry = ToolRegistry()
@@ -447,7 +484,7 @@ Examples
         while True:
 
             try:
-                line = input("cybersec> ")
+                line = input("phantomx> ")
 
             except (EOFError, KeyboardInterrupt):
                 print()
