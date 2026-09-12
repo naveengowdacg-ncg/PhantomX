@@ -257,8 +257,8 @@ class WorkflowEngine:
                 )
 
                 result = self._run_tool_with_loading(
-                whatweb,
-                endpoint.url,
+                    whatweb,
+                    endpoint.url,
                 )
 
                 result.endpoints.append(endpoint)

@@ -164,6 +164,37 @@ class App:
                         f"{service.version}"
                     )
 
+            if result.endpoints:
+                print("\nEndpoints:")
+
+                for endpoint in result.endpoints:
+                    print(
+                        f"  {endpoint.url}"
+                        f" | Source: {endpoint.source_tool}"
+                        f" | Port: {endpoint.port}"
+                    )
+
+            if result.observations:
+                print("\nObservations:")
+
+                for observation in result.observations:
+                    endpoint_url = (
+                        observation.endpoint.url
+                        if observation.endpoint
+                        else "N/A"
+                    )
+
+                    print(
+                        f"  {observation.title}"
+                        f" | Source: {observation.source_tool}"
+                        f" | Endpoint: {endpoint_url}"
+                    )
+
+                    if observation.evidence:
+                        print(
+                            f"    Evidence: {observation.evidence}"
+                        )
+
             if result.findings:
                 print("\nFindings:")
 
@@ -175,7 +206,7 @@ class App:
                     )
 
         print("\n" + "=" * 60)
-
+    
     def help(self):
         print("""
 Target / tools
