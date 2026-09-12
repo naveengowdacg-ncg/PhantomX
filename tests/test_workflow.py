@@ -58,6 +58,10 @@ class DummyExecutor:
         )
 
 
+class DummyAdapterManager:
+    def run(self, tool, target, fallback_executor):
+        return fallback_executor.run(tool, target)
+
 class DummyNormalizer:
     def parse(self, result):
         return result
@@ -84,6 +88,7 @@ def main():
     engine = WorkflowEngine(
         registry=DummyRegistry(),
         executor=DummyExecutor(),
+        adapter_manager=DummyAdapterManager(),
         normalizer=DummyNormalizer(),
         risk_engine=DummyRiskEngine(),
         logger=DummyLogger(),

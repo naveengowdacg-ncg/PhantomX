@@ -21,16 +21,18 @@ class WorkflowEngine:
     }
 
     def __init__(
-        self,
-        registry,
-        executor,
-        normalizer,
-        risk_engine,
-        logger,
-        max_workers=4,
-    ):
+    self,
+    registry,
+    executor,
+    adapter_manager,
+    normalizer,
+    risk_engine,
+    logger,
+    max_workers=4,
+):
         self.registry = registry
         self.executor = executor
+        self.adapter_manager = adapter_manager
         self.normalizer = normalizer
         self.risk_engine = risk_engine
         self.logger = logger
@@ -49,7 +51,11 @@ class WorkflowEngine:
     def _run_tool(self, tool, target):
         """Execute, normalize, and score one tool result."""
 
-        result = self.executor.run(tool, target)
+        result = self.adapter_manager.run(
+        tool,
+        target,
+        self.executor
+        )
         result = self.normalizer.parse(result)
         result.findings = self.risk_engine.score_all(result.findings)
 

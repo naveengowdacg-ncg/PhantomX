@@ -1,7 +1,6 @@
 import shlex
 
-from modules.nmap.adapter import NmapAdapter
-
+from core.adapter_manager import AdapterManager
 from core.executor import ToolExecutor
 from core.logger import get_logger
 from core.models import Session
@@ -29,19 +28,20 @@ class App:
         self.registry = ToolRegistry()
         self.logger = get_logger()
         self.executor = ToolExecutor(self.logger)
+        self.adapter_manager = AdapterManager()
         self.normalizer = Normalizer()
         self.risk = RiskEngine()
 
         self.workflow = WorkflowEngine(
-            self.registry,
-            self.executor,
-            self.normalizer,
-            self.risk,
-            self.logger
-        )
+        self.registry,
+        self.executor,
+        self.adapter_manager,
+        self.normalizer,
+        self.risk,
+        self.logger
+)
 
         self.reporter = Reporter()
-        self.nmap = NmapAdapter()
 
         self.target = None
         self.last_session = None
@@ -187,24 +187,15 @@ Examples
         )
 
         # Specialized Nmap execution path
-        if name.lower() == "nmap":
+        print(
+    f"\n[+] Running {name} against {self.target}..."
+)
 
-            if not self.nmap.is_available():
-                print("Nmap is not available.")
-                return
-
-            print(
-                f"\n[+] Running Nmap against {self.target}..."
-            )
-
-            result = self.nmap.scan(self.target)
-
-        else:
-            # Generic execution path for other tools
-            result = self.executor.run(
-                tool,
-                self.target
-            )
+        result = self.adapter_manager.run(
+        tool,
+        self.target,
+        self.executor
+)
 
         # Normalize result into common findings
         result = self.normalizer.parse(result)

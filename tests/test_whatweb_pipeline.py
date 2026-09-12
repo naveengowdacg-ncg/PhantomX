@@ -39,6 +39,7 @@ def main():
     )
 
     for observation in result.observations:
+        
 
         print("\n--- OBSERVATION ---")
         print(f"Title: {observation.title}")
