@@ -15,6 +15,38 @@ class Service:
     def as_dict(self) -> Dict[str, Any]:
         return self.__dict__.copy()
 
+@dataclass
+class Endpoint:
+    url: str
+    scheme: str = ""
+    host: str = ""
+    port: Optional[int] = None
+    source_tool: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return self.__dict__.copy()
+
+
+@dataclass
+class Observation:
+    title: str
+    category: str
+    target: str
+    source_tool: str
+    evidence: str = ""
+    confidence: float = 0.5
+    endpoint: Optional[Endpoint] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> Dict[str, Any]:
+        data = self.__dict__.copy()
+
+        if self.endpoint:
+            data["endpoint"] = self.endpoint.as_dict()
+
+        return data
+
 
 @dataclass
 class Finding:
@@ -67,12 +99,16 @@ class ToolResult:
     status: str = "success"
     command: List[str] = field(default_factory=list)
     services: List[Service] = field(default_factory=list)
+    endpoints: List[Endpoint] = field(default_factory=list)
+    observations: List[Observation] = field(default_factory=list)
     findings: List[Finding] = field(default_factory=list)
 
     def as_dict(self) -> Dict[str, Any]:
         data = self.__dict__.copy()
         data["services"] = [s.as_dict() for s in self.services]
         data["findings"] = [f.as_dict() for f in self.findings]
+        data["endpoints"] = [e.as_dict() for e in self.endpoints]
+        data["observations"] = [o.as_dict() for o in self.observations]
         return data
 
 
