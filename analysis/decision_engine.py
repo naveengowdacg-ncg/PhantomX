@@ -50,6 +50,11 @@ class DecisionEngine:
                         "protocol": service.protocol,
                         "service": service.service,
                         "version": service.version,
+                        "recommended_tools": [
+                            "whatweb",
+                            "nikto",
+                            "nuclei",
+                        ],
                         "reason": (
                             f"HTTP service discovered on "
                             f"{service.port}/{service.protocol}."
@@ -65,6 +70,7 @@ class DecisionEngine:
                         "protocol": service.protocol,
                         "service": service.service,
                         "version": service.version,
+                        "recommended_tools": [],
                         "reason": (
                             f"Database service discovered on "
                             f"{service.port}/{service.protocol}."

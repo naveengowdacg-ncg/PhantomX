@@ -306,51 +306,56 @@ class WorkflowEngine:
             )
 
         # ---------------------------------------------------------
-        # Stage 4: Remaining web tools
+        # Stage 4: Execute tools selected by the decision engine
         # ---------------------------------------------------------
 
-        remaining_web_tools = [
+        recommended_tool_names = set()
+
+        for decision in decisions:
+            if decision["type"] == "web_assessment":
+                recommended_tool_names.update(
+                    decision.get("recommended_tools", [])
+                )
+
+        selected_web_tools = [
             tool
             for tool in web_tools
-            if tool.get("name") != "whatweb"
+            if tool.get("name") in recommended_tool_names
+            and tool.get("enabled", True)
         ]
 
-        if remaining_web_tools and web_endpoints:
+        if selected_web_tools and web_endpoints:
 
-            with ThreadPoolExecutor(
-                max_workers=self.max_workers
-            ) as pool:
+            for tool in selected_web_tools:
 
-                futures = {}
+                for endpoint in web_endpoints:
 
-                for tool in remaining_web_tools:
+                    self.logger.info(
+                        "Decision-driven assessment: %s -> %s",
+                        tool["name"],
+                        endpoint.url,
+                    )
 
-                    for endpoint in web_endpoints:
+                    result = self._run_tool_with_loading(
+                        tool,
+                        endpoint.url,
+                    )
 
-                        futures[
-                            pool.submit(
-                                self._run_tool_with_loading,
-                                tool,
-                                endpoint.url,
-                            )
-                        ] = (
-                            tool,
-                            endpoint,
-                        )
-
-                for future in as_completed(futures):
-
-                    tool, endpoint = futures[future]
-
-                    result = future.result()
                     result.endpoints.append(endpoint)
 
                     session.results.append(result)
 
                     self.logger.info(
-                        "Web tool %s finished with %s findings",
+                        "Assessment tool %s finished with %s findings",
                         result.tool,
                         len(result.findings),
                     )
+
+        elif web_endpoints:
+
+            session.notes.append(
+                "Web endpoints discovered, but no recommended "
+                "web assessment tools are enabled."
+            )
 
         return session
