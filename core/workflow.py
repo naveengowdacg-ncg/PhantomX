@@ -261,7 +261,7 @@ class WorkflowEngine:
                 )
 
         # ---------------------------------------------------------
-        # Stage 3: Adaptive web assessment
+        # Stage 3: Prepare adaptive web assessment
         # ---------------------------------------------------------
 
         web_tools = [
@@ -269,41 +269,6 @@ class WorkflowEngine:
             for tool in selected
             if tool.get("category") == "web"
         ]
-
-        whatweb = self._find_tool(web_tools, "whatweb")
-
-        if whatweb and web_endpoints:
-
-            for endpoint in web_endpoints:
-
-                self.logger.info(
-                    "Adaptive handoff: nmap -> whatweb -> %s",
-                    endpoint.url,
-                )
-
-                result = self._run_tool_with_loading(
-                    whatweb,
-                    endpoint.url,
-                )
-
-                result.endpoints.append(endpoint)
-
-                for observation in result.observations:
-                    observation.endpoint = endpoint
-
-                session.results.append(result)
-
-                self.logger.info(
-                    "Web tool %s finished with %s observations",
-                    result.tool,
-                    len(result.observations),
-                )
-
-        elif web_endpoints:
-
-            session.notes.append(
-                "Web endpoints discovered, but WhatWeb is not enabled."
-            )
 
         # ---------------------------------------------------------
         # Stage 4: Execute tools selected by the decision engine
@@ -340,8 +305,10 @@ class WorkflowEngine:
                         tool,
                         endpoint.url,
                     )
-
                     result.endpoints.append(endpoint)
+
+                    for observation in result.observations:
+                        observation.endpoint = endpoint
 
                     session.results.append(result)
 
