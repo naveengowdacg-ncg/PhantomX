@@ -4,7 +4,7 @@ import threading
 import time
 
 from core.models import Endpoint
-
+from analysis.decision_engine import DecisionEngine
 
 class WorkflowEngine:
     """Adaptive, profile-driven assessment workflow."""
@@ -37,6 +37,7 @@ class WorkflowEngine:
         self.adapter_manager = adapter_manager
         self.normalizer = normalizer
         self.risk_engine = risk_engine
+        self.decision_engine = DecisionEngine()
         self.logger = logger
         self.max_workers = max_workers
 
@@ -212,28 +213,52 @@ class WorkflowEngine:
         # Stage 2: Interpret discovery results
         # ---------------------------------------------------------
 
+        decisions = self.decision_engine.decide(
+            discovery_results
+        )
+
         web_endpoints = []
 
-        for result in discovery_results:
+        for decision in decisions:
 
-            if result.tool == "nmap":
-
-                discovered = self._derive_web_endpoints(result)
-
-                for endpoint in discovered:
-
-                    if endpoint.url not in {
-                        existing.url
-                        for existing in web_endpoints
-                    }:
-                        web_endpoints.append(endpoint)
-
-        if web_endpoints:
-
-            session.notes.append(
-                "Web endpoints discovered by Nmap: "
-                + ", ".join(endpoint.url for endpoint in web_endpoints)
+            self.logger.info(
+                "Assessment decision: %s -> %s",
+                decision["type"],
+                decision["target"],
             )
+
+            if decision["type"] == "web_assessment":
+
+                endpoint = Endpoint(
+                    url=decision["target"],
+                    scheme=(
+                        "https"
+                        if decision["target"].startswith("https://")
+                        else "http"
+                    ),
+                    host=decision["host"],
+                    port=decision["port"],
+                    source_tool="nmap",
+                    metadata={
+                        "service": decision["service"],
+                        "version": decision["version"],
+                        "decision": decision["type"],
+                    },
+                )
+
+                if endpoint.url not in {
+                    existing.url
+                    for existing in web_endpoints
+                }:
+                    web_endpoints.append(endpoint)
+
+            elif decision["type"] == "database_assessment":
+
+                session.notes.append(
+                    f"Database assessment relevant for "
+                    f"{decision['port']}/{decision['protocol']} "
+                    f"({decision['service']})."
+                )
 
         # ---------------------------------------------------------
         # Stage 3: Adaptive web assessment
