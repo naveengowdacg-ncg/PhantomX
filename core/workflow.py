@@ -325,4 +325,85 @@ class WorkflowEngine:
                 "web assessment tools are enabled."
             )
 
+        # ---------------------------------------------------------
+        # Stage 5: Interpret web assessment results
+        # ---------------------------------------------------------
+        follow_up_decisions = self.decision_engine.decide_from_observations(
+            session.results
+        )
+
+        for decision in follow_up_decisions:
+
+            self.logger.info(
+                f"Adaptive decision: {decision['type']} "
+                f"for {decision['target']}"
+            )
+
+            session.notes.append(
+                f"Follow-up assessment recommended: "
+                f"{decision['type']} for {decision['target']}. "
+                f"Reason: {decision['reason']}"
+            )
+
+            recommended_tools = decision.get(
+                "recommended_tools",
+                []
+            )
+
+            for tool_name in recommended_tools:
+
+                tool = self._find_tool(
+                    selected,
+                    tool_name
+                )
+
+                # Tool is not part of the current profile
+                if not tool:
+                    session.notes.append(
+                        f"Follow-up tool skipped: {tool_name} "
+                        f"is not available in the current profile."
+                    )
+                    continue
+
+                if not tool.get("enabled", True):
+                    session.notes.append(
+                        f"Follow-up tool skipped: {tool_name} "
+                        f"is disabled."
+                    )
+                    continue
+
+                # Reuse the discovered endpoint when possible
+                endpoint = next(
+                    (
+                        endpoint
+                        for endpoint in web_endpoints
+                        if endpoint.url == decision["target"]
+                    ),
+                    None
+                )
+
+                self.logger.info(
+                    f"Running adaptive follow-up: "
+                    f"{tool_name} -> {decision['target']}"
+                )
+
+                result = self._run_tool_with_loading(
+                    tool,
+                    decision["target"]
+                )
+
+                if endpoint:
+                    result.endpoints.append(endpoint)
+
+                    for observation in result.observations:
+                        observation.endpoint = endpoint
+
+                session.results.append(result)
+
+                self.logger.info(
+                    f"Adaptive follow-up completed: "
+                    f"{tool_name} "
+                    f"({result.status})"
+                )
+
         return session

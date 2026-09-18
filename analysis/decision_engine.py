@@ -52,8 +52,6 @@ class DecisionEngine:
                         "version": service.version,
                         "recommended_tools": [
                             "whatweb",
-                            "nikto",
-                            "nuclei",
                         ],
                         "reason": (
                             f"HTTP service discovered on "
@@ -92,6 +90,72 @@ class DecisionEngine:
         seen = set()
 
         for decision in decisions:
+            key = (
+                decision["type"],
+                decision["target"],
+                decision["port"],
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            unique.append(decision)
+
+        return unique
+    
+    def decide_from_observations(self, results):
+        """
+        Generate follow-up assessment decisions from tool observations.
+        """
+
+        decisions = []
+
+        for result in results:
+
+            if result.tool != "whatweb":
+                continue
+
+            for observation in result.observations:
+
+                fingerprint = observation.metadata.get(
+                    "fingerprint",
+                    ""
+                ).lower()
+
+                endpoint = observation.endpoint
+
+                if not endpoint:
+                    continue
+
+                if "apache" in fingerprint:
+                    decisions.append({
+                        "type": "apache_assessment",
+                        "target": endpoint.url,
+                        "host": endpoint.host,
+                        "port": endpoint.port,
+                        "recommended_tools": [
+                            "nikto",
+                            "nuclei",
+                        ],
+                        "reason": (
+                            "WhatWeb identified Apache on the "
+                            "discovered web endpoint."
+                        ),
+                        "source_tool": "whatweb",
+                        "evidence": observation.evidence,
+                    })
+
+        return self._deduplicate_observation_decisions(
+            decisions
+        )
+
+    def _deduplicate_observation_decisions(self, decisions):
+        unique = []
+        seen = set()
+
+        for decision in decisions:
+
             key = (
                 decision["type"],
                 decision["target"],
