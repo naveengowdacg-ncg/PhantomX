@@ -1,6 +1,6 @@
 from modules.nmap.adapter import NmapAdapter
 from modules.whatweb.adapter import WhatWebAdapter
-
+from modules.nuclei.adapter import NucleiAdapter
 
 class AdapterManager:
     """Manage specialized tool adapters."""
@@ -9,6 +9,8 @@ class AdapterManager:
         self.adapters = {
             "nmap": NmapAdapter(),
             "whatweb": WhatWebAdapter(),
+            "nuclei": NucleiAdapter(),
+
         }
 
     def get(self, tool_name):

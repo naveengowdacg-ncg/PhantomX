@@ -97,28 +97,7 @@ class Normalizer:
                     )
                 )
 
-        elif result.tool == "nuclei":
-            text = (result.stdout or "") + "\n" + (result.stderr or "")
-
-            for line in text.splitlines():
-                if line.strip():
-                    findings.append(
-                        Finding(
-                            title="Template-based vulnerability result",
-                            category="vulnerability",
-                            impact=6,
-                            exploitability=5,
-                            confidence=0.8,
-                            exposure=6,
-                            evidence=line.strip(),
-                            source_tool=result.tool,
-                            target=result.target,
-                            recommendation=(
-                                "Manually validate the result and follow "
-                                "the template/vendor remediation guidance."
-                            ),
-                        )
-                    )
+        
 
         result.findings = findings
         return result
