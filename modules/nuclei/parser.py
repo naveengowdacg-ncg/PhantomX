@@ -51,9 +51,14 @@ class NucleiParser:
                     ),
                     category="vulnerability",
                     severity=self.SEVERITY_MAP.get(
-                        severity,
-                        "INFO"
-                    ),
+                    severity,
+                    "INFO"
+                ).lower(),
+
+                scanner_severity=self.SEVERITY_MAP.get(
+                    severity,
+                    "INFO"
+                ).lower(),
                     impact=self._impact(severity),
                     exploitability=self._exploitability(
                         severity

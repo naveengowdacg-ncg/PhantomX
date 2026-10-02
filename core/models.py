@@ -53,6 +53,7 @@ class Finding:
     title: str
     category: str
     severity: str = "info"
+    scanner_severity: str = ""
     impact: float = 1.0
     exploitability: float = 1.0
     confidence: float = 0.5

@@ -136,9 +136,13 @@ class App:
 
         print("=" * 60)
 
-    def results(self):
+    def results(self, tool_name=None):
         if not self.last_session:
             print("\nNo results available. Run a scan first.")
+            return
+
+        if tool_name:
+            self.detailed_results(tool_name)
             return
 
         print("\n" + "=" * 60)
@@ -199,13 +203,178 @@ class App:
                 print("\nFindings:")
 
                 for finding in result.findings:
+                    scanner_severity = (
+                        f" | Scanner: "
+                        f"{finding.scanner_severity.upper()}"
+                        if finding.scanner_severity
+                        else ""
+                    )
+
                     print(
                         f"  [{finding.severity.upper():<8}] "
                         f"{finding.title}"
+                        f"{scanner_severity}"
                         f" | Score: {finding.score:.1f}"
                     )
 
         print("\n" + "=" * 60)
+
+    def detailed_results(self, tool_name):
+        tool_name = tool_name.lower()
+
+        matching_results = [
+            result
+            for result in self.last_session.results
+            if result.tool.lower() == tool_name
+        ]
+
+        if not matching_results:
+            print(
+                f"\nNo results found for tool: {tool_name}"
+            )
+            return
+
+        print("\n" + "=" * 70)
+        print(
+            f"PHANTOMX DETAILED RESULTS — "
+            f"{tool_name.upper()}"
+        )
+        print("=" * 70)
+
+        for result in matching_results:
+
+            print(f"\nTool          : {result.tool}")
+            print(f"Status        : {result.status}")
+            print(f"Target        : {result.target}")
+            print(f"Return code   : {result.return_code}")
+            print(
+                f"Duration      : "
+                f"{result.duration_seconds:.3f}s"
+            )
+
+            if result.command:
+                print(
+                    "\nCommand       : "
+                    + " ".join(result.command)
+                )
+
+            if result.services:
+                print("\n--- SERVICES ---")
+
+                for service in result.services:
+                    print(
+                        f"  {service.port}/{service.protocol} "
+                        f"{service.state:<8} "
+                        f"{service.service:<15} "
+                        f"{service.version}"
+                    )
+
+            if result.endpoints:
+                print("\n--- ENDPOINTS ---")
+
+                for endpoint in result.endpoints:
+                    print(f"  URL       : {endpoint.url}")
+                    print(
+                        f"  Source    : "
+                        f"{endpoint.source_tool}"
+                    )
+                    print(f"  Host      : {endpoint.host}")
+                    print(f"  Port      : {endpoint.port}")
+
+            if result.observations:
+                print("\n--- OBSERVATIONS ---")
+
+                for observation in result.observations:
+                    print(
+                        f"\n  Title      : "
+                        f"{observation.title}"
+                    )
+                    print(
+                        f"  Category   : "
+                        f"{observation.category}"
+                    )
+                    print(
+                        f"  Source     : "
+                        f"{observation.source_tool}"
+                    )
+                    print(
+                        f"  Confidence : "
+                        f"{observation.confidence}"
+                    )
+
+                    if observation.evidence:
+                        print(
+                            f"  Evidence   : "
+                            f"{observation.evidence}"
+                        )
+
+            if result.findings:
+                print("\n--- FINDINGS ---")
+
+                for finding in result.findings:
+
+                    print(
+                        f"\n  Title              : "
+                        f"{finding.title}"
+                    )
+                    print(
+                        f"  Category           : "
+                        f"{finding.category}"
+                    )
+                    print(
+                        f"  PhantomX Severity  : "
+                        f"{finding.severity.upper()}"
+                    )
+
+                    if finding.scanner_severity:
+                        print(
+                            f"  Scanner Severity   : "
+                            f"{finding.scanner_severity.upper()}"
+                        )
+
+                    print(
+                        f"  Risk Score         : "
+                        f"{finding.score:.1f}"
+                    )
+                    print(
+                        f"  Confidence         : "
+                        f"{finding.confidence}"
+                    )
+                    print(
+                        f"  Source             : "
+                        f"{finding.source_tool}"
+                    )
+
+                    if finding.evidence:
+                        print(
+                            f"  Evidence           : "
+                            f"{finding.evidence}"
+                        )
+
+                    if finding.recommendation:
+                        print(
+                            f"  Recommendation     : "
+                            f"{finding.recommendation}"
+                        )
+
+                    if finding.metadata:
+                        print(
+                            "  Metadata           :"
+                        )
+
+                        for key, value in finding.metadata.items():
+                            print(
+                                f"    {key}: {value}"
+                            )
+
+            if result.stderr:
+                print("\n--- STDERR ---")
+                print(result.stderr)
+
+            print("\n--- RAW STDOUT ---")
+            print(result.stdout)
+
+        print("\n" + "=" * 70)
     
     def help(self):
         print("""
@@ -225,7 +394,8 @@ Assessment
 Reports
   report json|markdown|html|all              Generate report from last session
   status                                     Show current PhantomX status
-  results                                    Show findings from last session
+  results                                    Show consolidated findings
+  results <tool>                             Show detailed results for a tool
   help
   exit
 
@@ -405,7 +575,12 @@ Examples
             return True
 
         if cmd == "results":
-            self.results()
+            if len(parts) == 1:
+                self.results()
+            elif len(parts) == 2:
+                self.results(parts[1])
+            else:
+                print("Usage: results [tool]")
             return True
 
         if cmd == "target" and len(parts) == 2:
