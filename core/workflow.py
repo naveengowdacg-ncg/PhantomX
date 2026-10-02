@@ -325,17 +325,28 @@ class WorkflowEngine:
                 "web assessment tools are enabled."
             )
 
-        # ---------------------------------------------------------
-        # Stage 5: Interpret web assessment results
-        # ---------------------------------------------------------
+        # Stage 5: Follow-up decisions from observations
         follow_up_decisions = self.decision_engine.decide_from_observations(
             session.results
         )
 
+        # Build lookup of tools allowed by the current profile
+        selected_tools_by_name = {
+            tool["name"]: tool
+            for tool in selected
+            if tool.get("enabled", True)
+        }
+
+        # Track tools already executed for a target
+        executed_tools = {
+            (result.tool, result.target)
+            for result in session.results
+        }
+
         for decision in follow_up_decisions:
 
             self.logger.info(
-                f"Adaptive decision: {decision['type']} "
+                f"Follow-up decision: {decision['type']} "
                 f"for {decision['target']}"
             )
 
@@ -345,51 +356,43 @@ class WorkflowEngine:
                 f"Reason: {decision['reason']}"
             )
 
-            recommended_tools = decision.get(
-                "recommended_tools",
-                []
-            )
+            # Execute tools recommended by the decision engine
+            for tool_name in decision.get("recommended_tools", []):
 
-            for tool_name in recommended_tools:
-
-                tool = self._find_tool(
-                    selected,
-                    tool_name
-                )
+                tool = selected_tools_by_name.get(tool_name)
 
                 # Tool is not part of the current profile
                 if not tool:
-                    session.notes.append(
-                        f"Follow-up tool skipped: {tool_name} "
-                        f"is not available in the current profile."
+                    self.logger.info(
+                        f"Skipping follow-up tool {tool_name}: "
+                        f"not enabled or not selected by profile."
                     )
                     continue
 
-                if not tool.get("enabled", True):
-                    session.notes.append(
-                        f"Follow-up tool skipped: {tool_name} "
-                        f"is disabled."
-                    )
-                    continue
+                target = decision["target"]
 
-                # Reuse the discovered endpoint when possible
-                endpoint = next(
-                    (
-                        endpoint
-                        for endpoint in web_endpoints
-                        if endpoint.url == decision["target"]
-                    ),
-                    None
-                )
+                # Prevent duplicate execution
+                if (tool_name, target) in executed_tools:
+                    continue
 
                 self.logger.info(
-                    f"Running adaptive follow-up: "
-                    f"{tool_name} -> {decision['target']}"
+                    f"Running follow-up tool {tool_name} "
+                    f"against {target}"
                 )
 
                 result = self._run_tool_with_loading(
                     tool,
-                    decision["target"]
+                    target
+                )
+
+                # Attach the endpoint that triggered this decision
+                endpoint = next(
+                    (
+                        endpoint
+                        for endpoint in web_endpoints
+                        if endpoint.url == target
+                    ),
+                    None
                 )
 
                 if endpoint:
@@ -400,10 +403,13 @@ class WorkflowEngine:
 
                 session.results.append(result)
 
+                executed_tools.add(
+                    (tool_name, target)
+                )
+
                 self.logger.info(
-                    f"Adaptive follow-up completed: "
-                    f"{tool_name} "
-                    f"({result.status})"
+                    f"Follow-up tool {tool_name} "
+                    f"completed with status {result.status}"
                 )
 
         return session
