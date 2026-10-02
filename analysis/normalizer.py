@@ -5,7 +5,7 @@ class Normalizer:
     """Convert tool results into the common finding model."""
 
     def parse(self, result):
-        findings = []
+        findings = list(result.findings)
 
         if result.tool == "nmap":
             for service in result.services:
