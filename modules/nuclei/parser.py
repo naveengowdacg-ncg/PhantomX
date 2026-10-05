@@ -200,6 +200,8 @@ class NucleiParser:
         for pattern in misconfiguration_patterns:
             if pattern in template_id:
                 return "misconfiguration"
+        if "misconfig" in tags:
+            return "misconfiguration"
 
         # Explicit vulnerability/CVE/security classifications
         if (
