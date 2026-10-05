@@ -270,6 +270,12 @@ class WorkflowEngine:
             if tool.get("category") == "web"
         ]
 
+        # Track tools already executed for a target
+        executed_tools = {
+            (result.tool, result.target)
+            for result in session.results
+        }
+
         # ---------------------------------------------------------
         # Stage 4: Execute tools selected by the decision engine
         # ---------------------------------------------------------
@@ -277,7 +283,10 @@ class WorkflowEngine:
         recommended_tool_names = set()
 
         for decision in decisions:
-            if decision["type"] == "web_assessment":
+            if decision["type"] in {
+                "web_assessment",
+                "database_assessment",
+            }:
                 recommended_tool_names.update(
                     decision.get("recommended_tools", [])
                 )
@@ -325,6 +334,65 @@ class WorkflowEngine:
                 "web assessment tools are enabled."
             )
 
+
+        # ---------------------------------------------------------
+        # Stage 4B: Execute database assessments
+        # ---------------------------------------------------------
+
+        database_decisions = [
+            decision
+            for decision in decisions
+            if decision["type"] == "database_assessment"
+        ]
+
+        database_tool_names = set()
+
+        for decision in database_decisions:
+            database_tool_names.update(
+                decision.get("recommended_tools", [])
+            )
+
+        selected_database_tools = [
+            tool
+            for tool in selected
+            if tool.get("name") in database_tool_names
+            and tool.get("category") == "vuln"
+            and tool.get("enabled", True)
+        ]
+
+        for decision in database_decisions:
+
+            for tool in selected_database_tools:
+
+                target = decision["target"]
+
+                if (tool["name"], target) in executed_tools:
+                    continue
+
+                self.logger.info(
+                    "Database assessment: %s -> %s",
+                    tool["name"],
+                    target,
+                )
+
+                result = self._run_tool_with_loading(
+                    tool,
+                    target,
+                )
+
+                session.results.append(result)
+
+                executed_tools.add(
+                    (tool["name"], target)
+                )
+
+                self.logger.info(
+                    "Database assessment tool %s "
+                    "finished with status %s",
+                    tool["name"],
+                    result.status,
+                )
+
         # Stage 5: Follow-up decisions from observations
         follow_up_decisions = self.decision_engine.decide_from_observations(
             session.results
@@ -335,12 +403,6 @@ class WorkflowEngine:
             tool["name"]: tool
             for tool in selected
             if tool.get("enabled", True)
-        }
-
-        # Track tools already executed for a target
-        executed_tools = {
-            (result.tool, result.target)
-            for result in session.results
         }
 
         for decision in follow_up_decisions:

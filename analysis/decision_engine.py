@@ -62,13 +62,15 @@ class DecisionEngine:
                 elif service.port in self.DATABASE_PORTS:
                     decisions.append({
                         "type": "database_assessment",
-                        "target": result.target,
+                        "target": f"{result.target}:{service.port}",
                         "host": result.target,
                         "port": service.port,
                         "protocol": service.protocol,
                         "service": service.service,
                         "version": service.version,
-                        "recommended_tools": [],
+                        "recommended_tools": [
+                             "nuclei",
+                        ],
                         "reason": (
                             f"Database service discovered on "
                             f"{service.port}/{service.protocol}."
@@ -103,7 +105,7 @@ class DecisionEngine:
             unique.append(decision)
 
         return unique
-    
+
     def decide_from_observations(self, results):
         """
         Generate follow-up assessment decisions from tool observations.
