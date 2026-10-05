@@ -40,6 +40,22 @@ class NucleiParser:
                 "info"
             ).lower()
 
+            template_id = data.get(
+                "template-id",
+                ""
+            )
+
+            tags = info.get(
+                "tags",
+                []
+            )
+
+            result_type = self._classify_result(
+                template_id,
+                tags,
+                severity
+            )
+
             findings.append(
                 Finding(
                     title=info.get(
@@ -49,7 +65,7 @@ class NucleiParser:
                             "Nuclei detection"
                         )
                     ),
-                    category="vulnerability",
+                    category=result_type,
                     severity=self.SEVERITY_MAP.get(
                     severity,
                     "INFO"
@@ -59,12 +75,22 @@ class NucleiParser:
                     severity,
                     "INFO"
                 ).lower(),
-                    impact=self._impact(severity),
-                    exploitability=self._exploitability(
-                        severity
+                    impact=(
+                        0
+                        if result_type == "observation"
+                        else self._impact(severity)
+                    ),
+                    exploitability=(
+                        0
+                        if result_type == "observation"
+                        else self._exploitability(severity)
                     ),
                     confidence=0.90,
-                    exposure=6,
+                    exposure=(
+                        0
+                        if result_type == "observation"
+                        else 6
+                    ),
                     evidence=data.get(
                         "matched-at",
                         data.get("url", target)
@@ -82,6 +108,7 @@ class NucleiParser:
                             "template-id",
                             ""
                         ),
+                        "classification": result_type,
                         "template": data.get(
                             "template",
                             ""
@@ -140,6 +167,60 @@ class NucleiParser:
             )
 
         return findings
+
+    def _classify_result(self, template_id, tags, severity):
+        """
+        Classify Nuclei results by security meaning rather than
+        scanner severity alone.
+        """
+
+        template_id = template_id.lower()
+        tags = [tag.lower() for tag in tags]
+
+        # Pure technology / service discovery
+        observation_patterns = [
+            "waf-detect",
+            "apache-detect",
+            "mysql-detect",
+            "mysql-info",
+            "default-apache-test-all",
+            "default-apache2-page",
+        ]
+
+        for pattern in observation_patterns:
+            if pattern in template_id:
+                return "observation"
+
+        # Known configuration / exposure checks
+        misconfiguration_patterns = [
+            "http-missing-security-headers",
+            "apache-server-status",
+        ]
+
+        for pattern in misconfiguration_patterns:
+            if pattern in template_id:
+                return "misconfiguration"
+
+        # Explicit vulnerability/CVE/security classifications
+        if (
+            "cve" in tags
+            or "vulnerability" in tags
+            or "rce" in tags
+            or "sqli" in tags
+            or "xss" in tags
+            or "ssrf" in tags
+            or "lfi" in tags
+            or "rfi" in tags
+            or "auth-bypass" in tags
+        ):
+            return "vulnerability"
+
+        # If Nuclei reports a medium+ severity result and it
+        # wasn't identified as pure discovery, treat it as a finding.
+        if severity in {"medium", "high", "critical"}:
+            return "vulnerability"
+
+        return "observation"
 
     def _impact(self, severity):
         return {
