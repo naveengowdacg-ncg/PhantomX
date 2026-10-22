@@ -59,14 +59,21 @@ class NucleiParser:
             findings.append(
                 Finding(
                     title=(
-                    "MySQL native password authentication detected "
-                    "(verify security policy)"
-                    if template_id.lower() == "mysql-native-password"
-                    else info.get(
-                        "name",
-                        data.get("template-id", "Nuclei detection"),
-                    )
-                ),
+                        "MySQL native password authentication detected "
+                        "(verify security policy)"
+                        if template_id.lower() == "mysql-native-password"
+                        else (
+                            "Missing HTTP security header: "
+                            + data.get("matcher-name", "unspecified")
+                            .replace("-", " ")
+                            .title()
+                            if template_id.lower() == "http-missing-security-headers"
+                            else info.get(
+                                "name",
+                                data.get("template-id", "Nuclei detection"),
+                            )
+                        )
+                    ),
                     category=result_type,
                     severity=self.SEVERITY_MAP.get(
                     severity,
