@@ -29,10 +29,7 @@ class AdapterManager:
 
         if adapter:
             if not adapter.is_available():
-                return fallback_executor.run(
-                    **tool,
-                    target=target,
-                )
+                return fallback_executor.run(tool, target)
 
             if name == "nuclei":
                 return adapter.scan(
@@ -42,7 +39,4 @@ class AdapterManager:
 
             return adapter.scan(target)
 
-        return fallback_executor.run(
-            **tool,
-            target=target,
-        )
+        return fallback_executor.run(tool, target)
