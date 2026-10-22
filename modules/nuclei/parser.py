@@ -98,7 +98,11 @@ class NucleiParser:
                     exposure=(
                         0
                         if result_type == "observation"
-                        else 6
+                        else (
+                            3
+                            if result_type == "misconfiguration"
+                            else 6
+                        )
                     ),
                     evidence=data.get(
                         "matched-at",
