@@ -58,7 +58,7 @@ class WorkflowEngine:
         sys.stdout.write("\r" + " " * (len(message) + 2) + "\r")
         sys.stdout.flush()
 
-    def _run_tool_with_loading(self, tool, target):
+    def _run_tool_with_loading(self, tool, target, extra_args=None):
         """Run a tool while displaying a live loading indicator."""
         stop_event = threading.Event()
 
@@ -74,7 +74,11 @@ class WorkflowEngine:
         loading_thread.start()
 
         try:
-            return self._run_tool(tool, target)
+            return self._run_tool(
+                tool,
+                target,
+                extra_args=extra_args,
+            )
         finally:
             stop_event.set()
             loading_thread.join()
@@ -89,14 +93,16 @@ class WorkflowEngine:
             and tool.get("category") in categories
         ]
 
-    def _run_tool(self, tool, target):
+    def _run_tool(self, tool, target, extra_args=None):
         """Execute, normalize, and score one tool result."""
 
         result = self.adapter_manager.run(
-        tool,
-        target,
-        self.executor
+            tool,
+            target,
+            self.executor,
+            extra_args=extra_args,
         )
+
         result = self.normalizer.parse(result)
         result.findings = self.risk_engine.score_all(result.findings)
 
@@ -378,6 +384,7 @@ class WorkflowEngine:
                 result = self._run_tool_with_loading(
                     tool,
                     target,
+                    extra_args=["--tags", "mysql"],
                 )
 
                 session.results.append(result)

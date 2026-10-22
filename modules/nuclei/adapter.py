@@ -17,7 +17,7 @@ class NucleiAdapter:
     def is_available(self):
         return self.executable is not None
 
-    def scan(self, target):
+    def scan(self, target, extra_args=None):
         if not self.is_available():
             raise RuntimeError(
                 "Nuclei is not installed or not available in PATH."
@@ -29,6 +29,9 @@ class NucleiAdapter:
             target,
             "-jsonl",
         ]
+
+        if extra_args:
+            command.extend(extra_args)
 
         started_at = datetime.now(timezone.utc).isoformat()
         start_time = time.perf_counter()
@@ -56,7 +59,7 @@ class NucleiAdapter:
                 category="vuln",
                 target=target,
                 started_at=started_at,
-                finished_at=finished_at,
+                finished_at=datetime.now(timezone.utc).isoformat(),
                 return_code=process.returncode,
                 stdout=process.stdout,
                 stderr=process.stderr,
