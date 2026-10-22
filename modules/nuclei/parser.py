@@ -58,13 +58,15 @@ class NucleiParser:
 
             findings.append(
                 Finding(
-                    title=info.get(
+                    title=(
+                    "MySQL native password authentication detected "
+                    "(verify security policy)"
+                    if template_id.lower() == "mysql-native-password"
+                    else info.get(
                         "name",
-                        data.get(
-                            "template-id",
-                            "Nuclei detection"
-                        )
-                    ),
+                        data.get("template-id", "Nuclei detection"),
+                    )
+                ),
                     category=result_type,
                     severity=self.SEVERITY_MAP.get(
                     severity,
@@ -183,6 +185,7 @@ class NucleiParser:
             "apache-detect",
             "mysql-detect",
             "mysql-info",
+            "mysql-native-password",
             "default-apache-test-all",
             "default-apache2-page",
         ]
