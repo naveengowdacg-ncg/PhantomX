@@ -56,6 +56,21 @@ class NucleiParser:
                 severity
             )
 
+            # HSTS is relevant to HTTPS, not a plain HTTP response.
+            matched_url = (
+                data.get("matched-at", "")
+                or data.get("url", "")
+                or target
+            )
+
+            if (
+                template_id.lower() == "http-missing-security-headers"
+                and data.get("matcher-name", "").lower()
+                    == "strict-transport-security"
+                and matched_url.lower().startswith("http://")
+            ):
+                result_type = "observation"
+
             findings.append(
                 Finding(
                     title=(
