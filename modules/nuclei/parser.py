@@ -1,3 +1,4 @@
+
 import json
 
 from core.models import Finding
@@ -21,7 +22,6 @@ class NucleiParser:
             return findings
 
         for line in output.splitlines():
-
             line = line.strip()
 
             if not line:
@@ -35,70 +35,103 @@ class NucleiParser:
             info = data.get("info", {})
             classification = info.get("classification", {})
 
-            severity = info.get(
-                "severity",
-                "info"
-            ).lower()
+            severity = info.get("severity", "info").lower()
+            template_id = data.get("template-id", "")
+            normalized_template_id = template_id.lower()
 
-            template_id = data.get(
-                "template-id",
-                ""
-            )
-
-            tags = info.get(
-                "tags",
-                []
-            )
-
+            tags = info.get("tags", [])
             result_type = self._classify_result(
                 template_id,
                 tags,
-                severity
+                severity,
             )
 
-            # HSTS is relevant to HTTPS, not a plain HTTP response.
             matched_url = (
                 data.get("matched-at", "")
                 or data.get("url", "")
                 or target
             )
 
+            matcher_name = data.get("matcher-name", "")
+
+            # HSTS is relevant to HTTPS, not a plain HTTP response.
             if (
-                template_id.lower() == "http-missing-security-headers"
-                and data.get("matcher-name", "").lower()
-                    == "strict-transport-security"
+                normalized_template_id
+                == "http-missing-security-headers"
+                and matcher_name.lower() == "strict-transport-security"
                 and matched_url.lower().startswith("http://")
             ):
                 result_type = "observation"
+
+            is_apache_status = (
+                normalized_template_id == "apache-server-status"
+            )
+
+            if is_apache_status:
+                recommendation = (
+                    "Restrict /server-status to trusted administrators "
+                    "or disable it if unnecessary. Verify access controls "
+                    "from a non-local client before concluding that the "
+                    "endpoint is remotely exposed."
+                )
+            else:
+                recommendation = (
+                    "Validate the Nuclei result and apply the remediation "
+                    "guidance associated with the detected template."
+                )
+
+            metadata = {
+                "template_id": template_id,
+                "classification": result_type,
+                "template": data.get("template", ""),
+                "severity": severity,
+                "tags": tags,
+                "description": info.get("description", ""),
+                "matched_at": data.get("matched-at", ""),
+                "url": data.get("url", ""),
+                "host": data.get("host", ""),
+                "port": data.get("port", ""),
+                "scheme": data.get("scheme", ""),
+                "matcher_name": matcher_name,
+                "type": data.get("type", ""),
+                "cwe_id": classification.get("cwe-id", []),
+                "cve_id": classification.get("cve-id", []),
+                "references": info.get("reference", []),
+            }
+
+            if is_apache_status:
+                metadata.update({
+                    "verification_status": "scanner_match_unverified",
+                    "remote_exposure": "not_verified",
+                    "access_control": "not_assessed",
+                    "exposure_scope": "unknown",
+                })
 
             findings.append(
                 Finding(
                     title=(
                         "MySQL native password authentication detected "
                         "(verify security policy)"
-                        if template_id.lower() == "mysql-native-password"
+                        if normalized_template_id
+                        == "mysql-native-password"
                         else (
                             "Missing HTTP security header: "
-                            + data.get("matcher-name", "unspecified")
-                            .replace("-", " ")
-                            .title()
-                            if template_id.lower() == "http-missing-security-headers"
+                            + matcher_name.replace("-", " ").title()
+                            if normalized_template_id
+                            == "http-missing-security-headers"
                             else info.get(
                                 "name",
-                                data.get("template-id", "Nuclei detection"),
+                                template_id or "Nuclei detection",
                             )
                         )
                     ),
                     category=result_type,
                     severity=self.SEVERITY_MAP.get(
-                    severity,
-                    "INFO"
-                ).lower(),
-
-                scanner_severity=self.SEVERITY_MAP.get(
-                    severity,
-                    "INFO"
-                ).lower(),
+                        severity, "INFO"
+                    ).lower(),
+                    scanner_severity=self.SEVERITY_MAP.get(
+                        severity, "INFO"
+                    ).lower(),
                     impact=(
                         0
                         if result_type == "observation"
@@ -119,78 +152,15 @@ class NucleiParser:
                             else 6
                         )
                     ),
-                    evidence=data.get(
-                        "matched-at",
-                        data.get("url", target)
+                    evidence=(
+                        data.get("matched-at")
+                        or data.get("url")
+                        or target
                     ),
                     source_tool="nuclei",
                     target=target,
-                    recommendation=(
-                        "Validate the Nuclei result and "
-                        "apply the remediation guidance "
-                        "associated with the detected "
-                        "template."
-                    ),
-                    metadata={
-                        "template_id": data.get(
-                            "template-id",
-                            ""
-                        ),
-                        "classification": result_type,
-                        "template": data.get(
-                            "template",
-                            ""
-                        ),
-                        "severity": severity,
-                        "tags": info.get(
-                            "tags",
-                            []
-                        ),
-                        "description": info.get(
-                            "description",
-                            ""
-                        ),
-                        "matched_at": data.get(
-                            "matched-at",
-                            ""
-                        ),
-                        "url": data.get(
-                            "url",
-                            ""
-                        ),
-                        "host": data.get(
-                            "host",
-                            ""
-                        ),
-                        "port": data.get(
-                            "port",
-                            ""
-                        ),
-                        "scheme": data.get(
-                            "scheme",
-                            ""
-                        ),
-                        "matcher_name": data.get(
-                            "matcher-name",
-                            ""
-                        ),
-                        "type": data.get(
-                            "type",
-                            ""
-                        ),
-                        "cwe_id": classification.get(
-                            "cwe-id",
-                            []
-                        ),
-                        "cve_id": classification.get(
-                            "cve-id",
-                            []
-                        ),
-                        "references": info.get(
-                            "reference",
-                            []
-                        ),
-                    },
+                    recommendation=recommendation,
+                    metadata=metadata,
                 )
             )
 
@@ -205,7 +175,6 @@ class NucleiParser:
         template_id = template_id.lower()
         tags = [tag.lower() for tag in tags]
 
-        # Pure technology / service discovery
         observation_patterns = [
             "waf-detect",
             "apache-detect",
@@ -220,7 +189,6 @@ class NucleiParser:
             if pattern in template_id:
                 return "observation"
 
-        # Known configuration / exposure checks
         misconfiguration_patterns = [
             "http-missing-security-headers",
             "apache-server-status",
@@ -229,10 +197,10 @@ class NucleiParser:
         for pattern in misconfiguration_patterns:
             if pattern in template_id:
                 return "misconfiguration"
+
         if "misconfig" in tags:
             return "misconfiguration"
 
-        # Explicit vulnerability/CVE/security classifications
         if (
             "cve" in tags
             or "vulnerability" in tags
@@ -246,8 +214,6 @@ class NucleiParser:
         ):
             return "vulnerability"
 
-        # If Nuclei reports a medium+ severity result and it
-        # wasn't identified as pure discovery, treat it as a finding.
         if severity in {"medium", "high", "critical"}:
             return "vulnerability"
 
