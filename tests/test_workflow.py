@@ -1,4 +1,4 @@
-from core.models import Service
+﻿from core.models import Service
 from core.workflow import WorkflowEngine
 
 
@@ -59,7 +59,7 @@ class DummyExecutor:
 
 
 class DummyAdapterManager:
-    def run(self, tool, target, fallback_executor):
+    def run(self, tool, target, fallback_executor, extra_args=None):
         return fallback_executor.run(tool, target)
 
 class DummyNormalizer:
@@ -149,4 +149,6 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
+def test_workflow_hands_nmap_endpoint_to_whatweb():
     main()
