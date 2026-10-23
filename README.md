@@ -37,6 +37,37 @@ report html
 
 The framework does not require all tools to be installed. Missing executables are reported and the workflow continues.
 
+
+## Target authorization and configuration
+
+PhantomX validates target syntax and enforces an explicit allowlist by default.
+The default `config/settings.json` permits only local lab targets (`127.0.0.1`,
+`localhost`, and `::1`). Before assessing another system, add its authorized hostname,
+IP address, or network CIDR to `authorized_targets` only when you have permission
+to test it. CIDR entries such as `192.168.56.0/24` are supported; wildcard DNS
+entries such as `*.lab.example` are also supported. Hostnames are matched by name
+without automatically resolving them to IP addresses.
+
+Example configuration for an explicitly authorized lab network:
+
+```json
+{
+  "default_profile": "standard",
+  "reports_dir": "reports",
+  "max_workers": 4,
+  "scope_required": true,
+  "allowed_profiles": ["passive", "standard", "full"],
+  "authorized_targets": ["127.0.0.1", "192.168.56.0/24"]
+}
+```
+
+The `max_workers` setting controls concurrent discovery tasks, `reports_dir` controls
+report and execution-log output, and `allowed_profiles` restricts which scan profiles
+can be launched. `scan profile default` uses `default_profile`. Setting
+`scope_required` to `false` disables allowlist enforcement but does not disable target
+syntax validation; use that setting only when your assessment workflow explicitly
+requires it and you are authorized to assess the supplied targets.
+
 ## Current implementation milestone
 
 Implemented foundation:

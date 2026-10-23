@@ -14,6 +14,8 @@ from analysis.normalizer import Normalizer
 from analysis.scoring import RiskEngine
 
 from reporting.reporter import Reporter
+from core.settings import load_settings
+from core.scope import TargetScope, TargetScopeError
 
 
 BANNER = r"""
@@ -61,24 +63,32 @@ class App:
             stop_event.set()
             loading_thread.join()
 
-    def __init__(self):
+    def __init__(self, settings_path="config/settings.json"):
+        self.settings = load_settings(settings_path)
+        self.scope = TargetScope(
+            scope_required=self.settings["scope_required"],
+            authorized_targets=self.settings["authorized_targets"],
+        )
         self.registry = ToolRegistry()
-        self.logger = get_logger()
+        self.logger = get_logger(self.settings["reports_dir"])
         self.executor = ToolExecutor(self.logger)
         self.adapter_manager = AdapterManager()
         self.normalizer = Normalizer()
         self.risk = RiskEngine()
 
         self.workflow = WorkflowEngine(
-        self.registry,
-        self.executor,
-        self.adapter_manager,
-        self.normalizer,
-        self.risk,
-        self.logger
-)
+            self.registry,
+            self.executor,
+            self.adapter_manager,
+            self.normalizer,
+            self.risk,
+            self.logger,
+            max_workers=self.settings["max_workers"],
+        )
 
-        self.reporter = Reporter()
+        self.reporter = Reporter(
+            reports_dir=self.settings["reports_dir"]
+        )
 
         self.target = None
         self.last_session = None
@@ -388,7 +398,7 @@ Target / tools
 
 Assessment
   scan <tool>                                Run one registered tool
-  scan profile <passive|standard|full>       Run a profile
+  scan profile <passive|standard|full|default>       Run a profile
   workflow full                              Run the full adaptive workflow
 
 Reports
@@ -408,9 +418,20 @@ Examples
   tools remove custom
 """)
 
-    def run_tool(self, name):
+    def _validated_target(self):
+        """Revalidate the current target immediately before any scan."""
         if not self.target:
             print("Set a target first.")
+            return None
+        try:
+            return self.scope.validate(self.target)
+        except TargetScopeError as exc:
+            print(f"Target rejected: {exc}")
+            return None
+
+    def run_tool(self, name):
+        target = self._validated_target()
+        if target is None:
             return
 
         tool = self.registry.get(name)
@@ -419,21 +440,23 @@ Examples
             print(f"Unknown tool: {name}")
             return
 
+        if not tool.get("enabled", True):
+            print(f"Tool is disabled: {name}")
+            return
+
         session = Session(
-            self.target,
+            target,
             f"single:{name}"
         )
 
         # Specialized Nmap execution path
-        print(
-    f"\n[+] Running {name} against {self.target}..."
-)
+        print(f"\n[+] Running {name} against {target}...")
 
         result = self.adapter_manager.run(
-        tool,
-        self.target,
-        self.executor
-)
+            tool,
+            target,
+            self.executor,
+        )
 
         # Normalize result into common findings
         result = self.normalizer.parse(result)
@@ -479,20 +502,23 @@ Examples
         )
 
     def run_profile(self, profile):
-
-        if not self.target:
-            print("Set a target first.")
+        target = self._validated_target()
+        if target is None:
             return
 
-        if profile not in self.workflow.PROFILES:
-            print(
-                "Profile must be passive, "
-                "standard, or full."
-            )
+        if profile == "default":
+            profile = self.settings["default_profile"]
+
+        if (
+            profile not in self.workflow.PROFILES
+            or profile not in self.settings["allowed_profiles"]
+        ):
+            allowed = ", ".join(self.settings["allowed_profiles"])
+            print(f"Profile must be one of: {allowed}.")
             return
 
         session = Session(
-            self.target,
+            target,
             profile
         )
 
@@ -584,12 +610,14 @@ Examples
             return True
 
         if cmd == "target" and len(parts) == 2:
-            self.target = parts[1]
+            try:
+                validated = self.scope.validate(parts[1])
+            except TargetScopeError as exc:
+                print(f"Target rejected: {exc}")
+                return True
 
-            print(
-                f"Target set: {self.target}"
-            )
-
+            self.target = validated
+            print(f"Target set: {self.target}")
             return True
 
         if cmd == "tools" and len(parts) >= 2:
@@ -674,7 +702,10 @@ Examples
             return True
 
         if cmd == "report" and len(parts) == 2:
-            self.reports(parts[1])
+            if parts[1] not in {"json", "markdown", "html", "all"}:
+                print("Usage: report json|markdown|html|all")
+            else:
+                self.reports(parts[1])
             return True
 
         print(

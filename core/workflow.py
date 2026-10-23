@@ -84,6 +84,8 @@ class WorkflowEngine:
             loading_thread.join()
     
     def tools_for_profile(self, profile):
+        if profile not in self.PROFILES:
+            raise ValueError(f"Unknown scan profile: {profile}")
         categories = self.PROFILES[profile]
 
         return [
