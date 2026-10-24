@@ -13,6 +13,13 @@ def _normalized_title(title):
     return _SPACE.sub(" ", (title or "").strip().lower())
 
 
+def _normalized_endpoint(endpoint):
+    """Normalize simple host/URL forms without discarding path identity."""
+    value = str(endpoint or "").strip().lower()
+    value = re.sub(r"^[a-z][a-z0-9+.-]*://", "", value)
+    return value.rstrip("/")
+
+
 def _finding_key(finding):
     metadata = finding.metadata if isinstance(finding.metadata, dict) else {}
     target = (finding.target or "").strip().lower()
@@ -20,11 +27,33 @@ def _finding_key(finding):
     port = metadata.get("port")
     protocol = (metadata.get("protocol") or "").strip().lower()
     endpoint = (
-        metadata.get("url")
+        metadata.get("matched_at")
+        or metadata.get("url")
         or metadata.get("endpoint")
-        or (finding.metadata.get("endpoint_url") if isinstance(finding.metadata, dict) else "")
+        or metadata.get("endpoint_url")
+        or finding.evidence
     )
-    endpoint = str(endpoint or "").strip().lower().rstrip("/")
+    endpoint = _normalized_endpoint(endpoint)
+
+    # Nuclei can run in more than one workflow stage and return the same
+    # detection with different target formatting (for example, a bare host
+    # in one result and an HTTP URL in another). Correlate only when the
+    # template, endpoint, category, and title all agree. Including title is
+    # important because one generic template can emit multiple distinct
+    # findings, such as individual missing HTTP security headers.
+    template_id = str(metadata.get("template_id") or "").strip().lower()
+    if (
+        (finding.source_tool or "").strip().lower() == "nuclei"
+        and template_id
+        and endpoint
+    ):
+        return (
+            "nuclei-detection",
+            endpoint,
+            template_id,
+            category,
+            _normalized_title(finding.title),
+        )
 
     # CVEs are globally meaningful identifiers. Generic scanner plugin/template
     # IDs are not: one template can emit several distinct findings (for example,

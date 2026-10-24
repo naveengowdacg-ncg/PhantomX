@@ -1,4 +1,5 @@
 from analysis.scoring import RiskEngine
+from analysis.correlation import CorrelationEngine
 from core.models import Finding, Session, ToolResult
 from core.workflow import WorkflowEngine
 from reporting.reporter import Reporter
@@ -180,3 +181,70 @@ def test_markdown_report_uses_real_newlines(tmp_path):
     assert "\\n" not in report
     assert report.startswith("# Security Assessment Report\n")
     assert "\n- Target: `127.0.0.1`\n" in report
+
+
+
+def test_duplicate_nuclei_detection_correlates_across_target_formats():
+    first = Finding(
+        title="MySQL - Detect", category="observation",
+        target="127.0.0.1:3306", source_tool="nuclei",
+        evidence="127.0.0.1:3306",
+        metadata={
+            "template_id": "mysql-detect",
+            "matched_at": "127.0.0.1:3306",
+            "url": "127.0.0.1:3306",
+            "port": 3306,
+            "type": "tcp",
+        },
+    )
+    repeated = Finding(
+        title="MySQL - Detect", category="observation",
+        target="http://127.0.0.1", source_tool="nuclei",
+        evidence="127.0.0.1:3306",
+        metadata={
+            "template_id": "mysql-detect",
+            "matched_at": "127.0.0.1:3306",
+            "url": "127.0.0.1:3306",
+            "port": 3306,
+            "type": "tcp",
+        },
+    )
+
+    groups = CorrelationEngine().correlate([first, repeated])
+
+    assert len(groups) == 1
+    assert len(groups[0].findings) == 2
+
+
+def test_distinct_nuclei_templates_on_same_endpoint_stay_separate():
+    shared = {
+        "matched_at": "127.0.0.1:3306",
+        "url": "127.0.0.1:3306",
+        "port": 3306,
+        "type": "tcp",
+    }
+    findings = [
+        Finding(
+            title="MySQL - Detect", category="observation",
+            target="127.0.0.1:3306", source_tool="nuclei",
+            evidence="127.0.0.1:3306",
+            metadata={**shared, "template_id": "mysql-detect"},
+        ),
+        Finding(
+            title="MySQL Info - Enumeration", category="observation",
+            target="127.0.0.1:3306", source_tool="nuclei",
+            evidence="127.0.0.1:3306",
+            metadata={**shared, "template_id": "mysql-info"},
+        ),
+        Finding(
+            title="MySQL native password authentication detected (verify security policy)",
+            category="observation", target="127.0.0.1:3306",
+            source_tool="nuclei", evidence="127.0.0.1:3306",
+            metadata={**shared, "template_id": "mysql-native-password"},
+        ),
+    ]
+
+    groups = CorrelationEngine().correlate(findings)
+
+    assert len(groups) == 3
+    assert all(len(group.findings) == 1 for group in groups)
