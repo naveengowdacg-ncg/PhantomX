@@ -1,8 +1,12 @@
 from core.models import Finding
+from modules.nikto.parser import NiktoParser
 
 
 class Normalizer:
     """Convert tool results into the common finding model."""
+
+    def __init__(self):
+        self.nikto_parser = NiktoParser()
 
     def parse(self, result):
         findings = list(result.findings)
@@ -41,39 +45,12 @@ class Normalizer:
                 )
 
         elif result.tool == "nikto":
-            text = (result.stdout or "") + "\n" + (result.stderr or "")
-
-            for line in text.splitlines():
-                if (
-                    line.strip().startswith("+")
-                    and any(
-                        keyword in line.lower()
-                        for keyword in [
-                            "missing",
-                            "outdated",
-                            "disclosure",
-                            "vulnerability",
-                            "dangerous",
-                        ]
-                    )
-                ):
-                    findings.append(
-                        Finding(
-                            title="Web server finding",
-                            category="web",
-                            impact=4,
-                            exploitability=4,
-                            confidence=0.7,
-                            exposure=6,
-                            evidence=line.strip(),
-                            source_tool=result.tool,
-                            target=result.target,
-                            recommendation=(
-                                "Validate the finding and apply the "
-                                "vendor/web-server remediation guidance."
-                            ),
-                        )
-                    )
+            findings.extend(
+                self.nikto_parser.parse(
+                    (result.stdout or "") + "\\n" + (result.stderr or ""),
+                    result.target,
+                )
+            )
 
         elif result.tool == "whatweb":
             text = (result.stdout or "") + "\n" + (result.stderr or "")
