@@ -16,6 +16,7 @@ from analysis.scoring import RiskEngine
 from reporting.reporter import Reporter
 from core.settings import load_settings
 from core.scope import TargetScope, TargetScopeError
+from core.storage import SQLiteSessionStore
 
 
 BANNER = r"""
@@ -90,6 +91,7 @@ class App:
             reports_dir=self.settings["reports_dir"]
         )
 
+        self.storage = SQLiteSessionStore("data/phantomx.sqlite3")
         self.target = None
         self.last_session = None
 
@@ -429,6 +431,49 @@ Examples
             print(f"Target rejected: {exc}")
             return None
 
+    def persist_session(self, session):
+        """Save a completed session without losing live results on DB errors."""
+        try:
+            self.storage.save(session)
+            print(f"[+] Assessment saved: {session.session_id}")
+        except Exception as exc:
+            self.logger.exception("Failed to persist assessment session")
+            print(f"[!] Could not save assessment history: {exc}")
+
+    def show_history(self, limit=20):
+        try:
+            sessions = self.storage.list_sessions(limit)
+        except Exception as exc:
+            print(f"Could not read assessment history: {exc}")
+            return
+        if not sessions:
+            print("No saved assessments yet.")
+            return
+        print("\nSAVED ASSESSMENTS")
+        print("-" * 92)
+        print(f"{'SESSION ID':<25} {'TARGET':<20} {'PROFILE':<16} {'STARTED AT'}")
+        for item in sessions:
+            print(
+                f"{item['session_id']:<25} {item['target']:<20} "
+                f"{item['profile']:<16} {item['started_at']}"
+            )
+
+    def load_saved_session(self, session_id):
+        try:
+            session = self.storage.load(session_id)
+        except Exception as exc:
+            print(f"Could not load saved assessment: {exc}")
+            return
+        if session is None:
+            print(f"Assessment not found: {session_id}")
+            return
+        self.last_session = session
+        self.target = session.target
+        print(
+            f"Loaded assessment {session.session_id} "
+            f"({session.target}, profile={session.profile}, "
+            f"results={len(session.results)})."
+        )
     def run_tool(self, name):
         target = self._validated_target()
         if target is None:
@@ -470,6 +515,7 @@ Examples
         session.results.append(result)
 
         self.last_session = session
+        self.persist_session(session)
 
         print("\n[+] Scan completed.")
         print(f"Tool: {result.tool}")
@@ -525,6 +571,7 @@ Examples
         self.workflow.run(session)
 
         self.last_session = session
+        self.persist_session(session)
 
         total_findings = sum(
             len(r.findings)
@@ -701,6 +748,18 @@ Examples
             self.run_profile("full")
             return True
 
+        if cmd == "history":
+            if len(parts) == 1:
+                self.show_history()
+            elif len(parts) == 2 and parts[1].isdigit():
+                self.show_history(int(parts[1]))
+            else:
+                print("Usage: history [limit]")
+            return True
+
+        if cmd == "load" and len(parts) == 2:
+            self.load_saved_session(parts[1])
+            return True
         if cmd == "report" and len(parts) == 2:
             if parts[1] not in {"json", "markdown", "html", "all"}:
                 print("Usage: report json|markdown|html|all")
