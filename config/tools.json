@@ -23,13 +23,15 @@
       "timeout": 120,
       "description": "Web technology fingerprinting"
     },
+    
     {
       "name": "nikto",
       "category": "web",
       "executable": "nikto",
       "args": [
         "-nointeractive",
-        "-nocheck",
+        "-ask",
+        "no",
         "-nolookup",
         "-maxtime",
         "120s",
@@ -40,6 +42,7 @@
       "timeout": 150,
       "description": "Web server security assessment"
     },
+
     {
       "name": "nuclei",
       "category": "vuln",
