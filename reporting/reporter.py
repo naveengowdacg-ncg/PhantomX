@@ -83,7 +83,7 @@ class Reporter:
         duplicate_count = raw_count - len(entries)
 
         lines = [
-            "# Security Assessment Report\\n",
+            "# Security Assessment Report\n",
             f"- Target: `{session.target}`",
             f"- Profile: `{session.profile}`",
             f"- Session: `{session.session_id}`",
@@ -149,7 +149,7 @@ class Reporter:
             lines.append("")
 
         p = self.dir / f"report_{session.session_id}.md"
-        p.write_text("\\n".join(lines), encoding="utf-8")
+        p.write_text("\n".join(lines), encoding="utf-8")
         return p
 
     def write_html(self, session):

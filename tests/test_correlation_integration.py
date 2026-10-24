@@ -146,3 +146,37 @@ def test_workflow_run_finalizes_with_correlation_summary():
         note.startswith("Finding correlation: 0 raw findings, 0 distinct groups")
         for note in session.notes
     )
+
+
+def test_distinct_missing_headers_are_not_merged_by_shared_template_id(tmp_path):
+    first = Finding(
+        title="Missing HTTP security header: Content Security Policy",
+        category="misconfiguration", target="127.0.0.1",
+        source_tool="nuclei", severity="low", score=32,
+        metadata={"template_id": "http-missing-security-headers"},
+    )
+    second = Finding(
+        title="Missing HTTP security header: X Frame Options",
+        category="misconfiguration", target="127.0.0.1",
+        source_tool="nuclei", severity="low", score=32,
+        metadata={"template_id": "http-missing-security-headers"},
+    )
+    session = Session(
+        target="127.0.0.1", profile="full",
+        results=[make_result("nuclei", first), make_result("nuclei", second)],
+    )
+
+    report = Reporter(tmp_path).write_markdown(session).read_text(encoding="utf-8")
+
+    assert "- Raw findings: **2**" in report
+    assert "- Distinct correlated findings: **2**" in report
+    assert "Correlated detections: **2**" not in report
+
+
+def test_markdown_report_uses_real_newlines(tmp_path):
+    session = Session(target="127.0.0.1", profile="passive")
+    report = Reporter(tmp_path).write_markdown(session).read_text(encoding="utf-8")
+
+    assert "\\n" not in report
+    assert report.startswith("# Security Assessment Report\n")
+    assert "\n- Target: `127.0.0.1`\n" in report

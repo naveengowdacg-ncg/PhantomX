@@ -26,18 +26,21 @@ def _finding_key(finding):
     )
     endpoint = str(endpoint or "").strip().lower().rstrip("/")
 
-    # A shared vulnerability identifier is stronger evidence than title similarity.
-    identifiers = []
-    for field in ("cve", "cve_id", "vulnerability_id", "plugin_id", "template_id"):
+    # CVEs are globally meaningful identifiers. Generic scanner plugin/template
+    # IDs are not: one template can emit several distinct findings (for example,
+    # a missing-header template can report multiple different headers).
+    cve_ids = []
+    for field in ("cve", "cve_id", "vulnerability_id"):
         value = metadata.get(field)
         if value:
             match = _CVE.search(str(value))
-            identifiers.append(match.group(0).upper() if match else str(value).strip().lower())
+            if match:
+                cve_ids.append(match.group(0).upper())
     evidence_match = _CVE.search((finding.title or "") + " " + (finding.evidence or ""))
     if evidence_match:
-        identifiers.append(evidence_match.group(0).upper())
-    if identifiers:
-        return ("vulnerability-id", target, sorted(set(identifiers))[0])
+        cve_ids.append(evidence_match.group(0).upper())
+    if cve_ids:
+        return ("cve", target, sorted(set(cve_ids))[0])
 
     title = _normalized_title(finding.title)
 
