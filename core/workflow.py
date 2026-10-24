@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 import threading
 import time
+from urllib.parse import urlsplit
 
 from core.models import Endpoint
 from analysis.decision_engine import DecisionEngine
@@ -32,6 +33,7 @@ class WorkflowEngine:
     risk_engine,
     logger,
     max_workers=4,
+    scope=None,
 ):
         self.registry = registry
         self.executor = executor
@@ -42,6 +44,8 @@ class WorkflowEngine:
         self.correlation_engine = CorrelationEngine()
         self.logger = logger
         self.max_workers = max_workers
+        self.scope = scope
+        self.max_discovered_hosts = 25
 
     def _show_loading(self, message, stop_event):
         """Display a simple loading spinner while a tool is running."""
@@ -219,6 +223,54 @@ class WorkflowEngine:
                         len(result.findings),
                     )
 
+        # Safely enrich passive subdomain discoveries with HTTP metadata.
+        # Newly discovered hosts are actively probed only when the configured
+        # scope explicitly authorizes them (including wildcard/CIDR rules).
+        subfinder_hosts = []
+        for result in discovery_results:
+            if result.tool != "subfinder":
+                continue
+            for finding in result.findings:
+                hostname = (finding.metadata or {}).get("hostname")
+                if hostname:
+                    subfinder_hosts.append(hostname)
+
+        httpx_tool = self._find_tool(selected, "httpx")
+        approved_hosts = []
+        if self.scope is not None and httpx_tool is not None:
+            for host in dict.fromkeys(subfinder_hosts):
+                if len(approved_hosts) >= self.max_discovered_hosts:
+                    session.notes.append(
+                        f"Subdomain enrichment capped at {self.max_discovered_hosts} hosts."
+                    )
+                    break
+                try:
+                    approved = self.scope.validate(host)
+                except Exception:
+                    continue
+                if approved != session.target and approved not in approved_hosts:
+                    approved_hosts.append(approved)
+
+        if approved_hosts:
+            with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+                futures = {
+                    pool.submit(
+                        self._run_tool_with_loading,
+                        httpx_tool,
+                        host,
+                    ): host
+                    for host in approved_hosts
+                }
+                for future in as_completed(futures):
+                    result = future.result()
+                    session.results.append(result)
+                    discovery_results.append(result)
+                    self.logger.info(
+                        "Scoped httpx enrichment for %s finished with status %s",
+                        result.target,
+                        result.status,
+                    )
+
         # ---------------------------------------------------------
         # Stage 2: Interpret discovery results
         # ---------------------------------------------------------
@@ -270,14 +322,51 @@ class WorkflowEngine:
                     f"({decision['service']})."
                 )
 
+        # Promote reachable httpx URLs to endpoints only after checking that
+        # their host is inside the configured authorization scope.
+        existing_endpoint_urls = {endpoint.url for endpoint in web_endpoints}
+        for result in discovery_results:
+            if result.tool != "httpx" or result.status != "success":
+                continue
+            for finding in result.findings:
+                url = (finding.metadata or {}).get("url")
+                if not url:
+                    continue
+                try:
+                    parsed = urlsplit(url)
+                    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                        continue
+                    if self.scope is not None:
+                        self.scope.validate(parsed.hostname)
+                    elif parsed.hostname != session.target:
+                        # Fail closed for discovered hosts if no scope validator
+                        # was provided to the workflow engine.
+                        continue
+                    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                    normalized_url = f"{parsed.scheme}://{parsed.netloc or parsed.hostname}"
+                    if normalized_url in existing_endpoint_urls:
+                        continue
+                    endpoint = Endpoint(
+                        url=normalized_url,
+                        scheme=parsed.scheme,
+                        host=parsed.hostname,
+                        port=port,
+                        source_tool="httpx",
+                        metadata={"discovered_path": parsed.path or "/", "status_code": (finding.metadata or {}).get("status_code")},
+                    )
+                    web_endpoints.append(endpoint)
+                    existing_endpoint_urls.add(normalized_url)
+                except Exception:
+                    continue
+
         # ---------------------------------------------------------
         # Stage 3: Prepare adaptive web assessment
         # ---------------------------------------------------------
 
-        web_tools = [
+        assessment_tools = [
             tool
             for tool in selected
-            if tool.get("category") == "web"
+            if tool.get("category") in {"web", "vuln"}
         ]
 
         # Track tools already executed for a target
@@ -303,7 +392,7 @@ class WorkflowEngine:
 
         selected_web_tools = [
             tool
-            for tool in web_tools
+            for tool in assessment_tools
             if tool.get("name") in recommended_tool_names
             and tool.get("enabled", True)
         ]
@@ -313,6 +402,11 @@ class WorkflowEngine:
             for tool in selected_web_tools:
 
                 for endpoint in web_endpoints:
+                    # TLS testing is meaningful only for HTTPS endpoints.
+                    if tool.get("name") == "testssl" and endpoint.scheme != "https":
+                        continue
+                    if (tool["name"], endpoint.url) in executed_tools:
+                        continue
 
                     self.logger.info(
                         "Decision-driven assessment: %s -> %s",
@@ -330,10 +424,12 @@ class WorkflowEngine:
                         observation.endpoint = endpoint
 
                     session.results.append(result)
+                    executed_tools.add((tool["name"], endpoint.url))
 
                     self.logger.info(
-                        "Assessment tool %s finished with %s findings",
+                        "Assessment tool %s finished with status %s and %s findings",
                         result.tool,
+                        result.status,
                         len(result.findings),
                     )
 

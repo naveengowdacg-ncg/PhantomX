@@ -1,6 +1,7 @@
 from modules.nmap.adapter import NmapAdapter
 from modules.whatweb.adapter import WhatWebAdapter
 from modules.nuclei.adapter import NucleiAdapter
+from modules.auxiliary.adapter import AuxiliaryAdapter
 
 class AdapterManager:
     """Manage specialized tool adapters."""
@@ -10,6 +11,12 @@ class AdapterManager:
             "nmap": NmapAdapter(),
             "whatweb": WhatWebAdapter(),
             "nuclei": NucleiAdapter(),
+            "subfinder": AuxiliaryAdapter(),
+            "dnsx": AuxiliaryAdapter(),
+            "httpx": AuxiliaryAdapter(),
+            "katana": AuxiliaryAdapter(),
+            "testssl": AuxiliaryAdapter(),
+            "gobuster": AuxiliaryAdapter(),
         }
 
     def get(self, tool_name):
@@ -28,6 +35,8 @@ class AdapterManager:
         adapter = self.get(name)
 
         if adapter:
+            if name in {"subfinder", "dnsx", "httpx", "katana", "testssl", "gobuster"}:
+                return adapter.scan(tool, target, fallback_executor)
             if not adapter.is_available():
                 return fallback_executor.run(tool, target)
 

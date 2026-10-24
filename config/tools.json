@@ -23,7 +23,6 @@
       "timeout": 120,
       "description": "Web technology fingerprinting"
     },
-    
     {
       "name": "nikto",
       "category": "web",
@@ -42,7 +41,6 @@
       "timeout": 150,
       "description": "Web server security assessment"
     },
-
     {
       "name": "nuclei",
       "category": "vuln",
@@ -55,6 +53,103 @@
       "enabled": true,
       "timeout": 300,
       "description": "Template-based vulnerability detection"
+    },
+    {
+      "name": "subfinder",
+      "category": "recon",
+      "executable": "subfinder",
+      "args": [
+        "-d",
+        "{target}",
+        "-silent"
+      ],
+      "enabled": true,
+      "timeout": 90,
+      "description": "Passive subdomain discovery for domain targets"
+    },
+    {
+      "name": "dnsx",
+      "category": "recon",
+      "executable": "dnsx",
+      "args": [
+        "-d",
+        "{target}",
+        "-a",
+        "-aaaa",
+        "-cname",
+        "-resp",
+        "-silent"
+      ],
+      "enabled": true,
+      "timeout": 60,
+      "description": "DNS record and resolution enrichment"
+    },
+    {
+      "name": "httpx",
+      "category": "recon",
+      "executable": "httpx",
+      "args": [
+        "-u",
+        "{target}",
+        "-status-code",
+        "-title",
+        "-tech-detect",
+        "-server",
+        "-json",
+        "-silent"
+      ],
+      "enabled": true,
+      "timeout": 90,
+      "description": "HTTP service validation and metadata collection"
+    },
+    {
+      "name": "katana",
+      "category": "web",
+      "executable": "katana",
+      "args": [
+        "-u",
+        "{target}",
+        "-silent",
+        "-jsonl",
+        "-d",
+        "2"
+      ],
+      "enabled": true,
+      "timeout": 120,
+      "description": "Shallow web crawling and endpoint discovery"
+    },
+    {
+      "name": "testssl",
+      "category": "web",
+      "executable": "testssl.sh",
+      "args": [
+        "--fast",
+        "--warnings",
+        "off",
+        "{target}"
+      ],
+      "enabled": true,
+      "timeout": 180,
+      "description": "TLS protocol and certificate configuration assessment"
+    },
+    {
+      "name": "gobuster",
+      "category": "web",
+      "executable": "gobuster",
+      "args": [
+        "dir",
+        "-u",
+        "{target}",
+        "-w",
+        "/usr/share/wordlists/dirb/common.txt",
+        "-q",
+        "-t",
+        "10",
+        "--no-error"
+      ],
+      "enabled": true,
+      "timeout": 180,
+      "description": "Web path and directory enumeration using a standard wordlist"
     }
   ]
 }

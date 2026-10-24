@@ -52,6 +52,11 @@ class DecisionEngine:
                         "version": service.version,
                         "recommended_tools": [
                             "whatweb",
+                            "nikto",
+                            "nuclei",
+                            "katana",
+                            "testssl",
+                            "gobuster",
                         ],
                         "reason": (
                             f"HTTP service discovered on "
