@@ -5,6 +5,7 @@ import time
 
 from core.models import Endpoint
 from analysis.decision_engine import DecisionEngine
+from analysis.correlation import CorrelationEngine
 
 class WorkflowEngine:
     """Adaptive, profile-driven assessment workflow."""
@@ -38,6 +39,7 @@ class WorkflowEngine:
         self.normalizer = normalizer
         self.risk_engine = risk_engine
         self.decision_engine = DecisionEngine()
+        self.correlation_engine = CorrelationEngine()
         self.logger = logger
         self.max_workers = max_workers
 
@@ -82,7 +84,7 @@ class WorkflowEngine:
         finally:
             stop_event.set()
             loading_thread.join()
-    
+
     def tools_for_profile(self, profile):
         if profile not in self.PROFILES:
             raise ValueError(f"Unknown scan profile: {profile}")
@@ -483,4 +485,52 @@ class WorkflowEngine:
                     f"completed with status {result.status}"
                 )
 
+        self._correlate_session_findings(session)
         return session
+
+    def _correlate_session_findings(self, session):
+        """Annotate findings with conservative cross-tool correlation metadata."""
+        findings = [
+            finding
+            for result in session.results
+            for finding in result.findings
+        ]
+
+        # Clear annotations before recalculating, so reprocessing a session
+        # cannot leave stale group data.
+        for finding in findings:
+            if isinstance(finding.metadata, dict):
+                finding.metadata.pop("correlation", None)
+
+        groups = self.correlation_engine.correlate(findings)
+        multi_finding_groups = [
+            group for group in groups if len(group.findings) > 1
+        ]
+
+        for group in multi_finding_groups:
+            details = {
+                "key": group.key,
+                "sources": group.sources,
+                "confidence": group.confidence,
+                "group_size": len(group.findings),
+            }
+            for finding in group.findings:
+                if not isinstance(finding.metadata, dict):
+                    finding.metadata = {}
+                finding.metadata["correlation"] = details.copy()
+
+        # Keep tool-level findings intact for auditability. Reports can use
+        # the same keys to present one representative per correlated group.
+        session.notes = [
+            note for note in session.notes
+            if not note.startswith("Finding correlation:")
+        ]
+        session.notes.append(
+            "Finding correlation: "
+            f"{len(findings)} raw findings, {len(groups)} distinct groups, "
+            f"{len(multi_finding_groups)} groups with multiple related findings."
+        )
+        self.logger.info(
+            "Finding correlation complete: %s raw findings, %s groups, %s multi-finding groups",
+            len(findings), len(groups), len(multi_finding_groups),
+        )

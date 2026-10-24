@@ -387,7 +387,7 @@ class App:
             print(result.stdout)
 
         print("\n" + "=" * 70)
-    
+
     def help(self):
         print("""
 Target / tools
@@ -405,6 +405,8 @@ Assessment
 
 Reports
   report json|markdown|html|all              Generate report from last session
+  history [limit]                            List saved assessments
+  load <session_id>                          Restore a saved assessment
   status                                     Show current PhantomX status
   results                                    Show consolidated findings
   results <tool>                             Show detailed results for a tool
@@ -513,6 +515,7 @@ Examples
 
         # Store result in session
         session.results.append(result)
+        self.workflow._correlate_session_findings(session)
 
         self.last_session = session
         self.persist_session(session)
@@ -642,9 +645,24 @@ Examples
         if cmd == "help":
             self.help()
             return True
-        
+
         if cmd == "status":
             self.status()
+            return True
+
+        if cmd == "history":
+            if len(parts) > 2:
+                print("Usage: history [limit]")
+            else:
+                try:
+                    limit = int(parts[1]) if len(parts) == 2 else 20
+                    self.show_history(limit)
+                except ValueError:
+                    print("History limit must be an integer.")
+            return True
+
+        if cmd == "load" and len(parts) == 2:
+            self.load_saved_session(parts[1])
             return True
 
         if cmd == "results":

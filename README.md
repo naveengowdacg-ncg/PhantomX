@@ -10,7 +10,7 @@ Academic implementation starter inspired by the architecture and feature ideas d
 - Adaptive assessment workflows: later stages can depend on earlier findings.
 - Configurable risk scoring and correlation.
 - Multiple assessment options/profiles.
-- Consolidated JSON, Markdown and HTML reporting.
+- Consolidated JSON, Markdown and HTML reporting with correlated findings and evidence.
 - Graceful failures, timeouts and execution logs.
 
 ## Quick start
@@ -80,5 +80,28 @@ Implemented foundation:
 - configurable risk scoring
 - JSON/Markdown/HTML reports
 - execution logging
+- conservative cross-tool finding correlation integrated into workflow completion
+- correlation metadata persisted with findings and sessions
+- reports that group related detections, retain source/evidence, and distinguish PhantomX risk scores from scanner severity
 
-Next milestones: richer parsers, more wrappers, plugin discovery, correlation rules, PDF export, test fixtures, and optional GUI.
+## Correlation and prioritization
+
+PhantomX correlates findings conservatively using vulnerability identifiers, recognized
+service-discovery evidence, and specific endpoint/title identity. A shared port or broad
+category alone is not enough to merge unrelated findings. Tool-level results remain
+available for auditability; Markdown and HTML reports show one representative per
+correlation group, the contributing source tools, distinct evidence, and how many
+detections were grouped.
+
+The **PhantomX risk score** is calculated using the configured weighted risk model and
+severity thresholds. **Scanner severity** is retained separately when the source scanner
+provides it, so differences between the two are visible rather than silently overwritten.
+The current model weights and thresholds remain unchanged.
+
+## Assessment history
+
+Completed assessments are saved in `data/phantomx.sqlite3`. Use `history [limit]` to
+list saved sessions and `load <session_id>` to restore one. The local database is
+intentionally excluded from Git; do not commit live assessment history.
+
+Next milestones: richer parsers, additional wrappers, PDF export, expanded controlled-lab test fixtures, and optional GUI.

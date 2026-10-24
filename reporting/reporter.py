@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from html import escape
 
+from analysis.correlation import CorrelationEngine
+
 
 class Reporter:
     VERIFICATION_FIELDS = {
@@ -18,6 +20,41 @@ class Reporter:
 
     def _flat_findings(self, session):
         return [f for r in session.results for f in r.findings]
+
+    def _correlated_findings(self, session):
+        """Return one report entry per conservative correlation group."""
+        raw_findings = self._flat_findings(session)
+        groups = CorrelationEngine().correlate(raw_findings)
+        entries = []
+
+        for group in groups:
+            # Keep the highest-risk finding as the representative while
+            # retaining the group sources and unique evidence in the report.
+            representative = max(
+                group.findings,
+                key=lambda finding: (finding.score, finding.confidence),
+            )
+            evidence = []
+            for finding in group.findings:
+                text = (finding.evidence or "").strip()
+                if text and text not in evidence:
+                    evidence.append(text)
+            entries.append({
+                "finding": representative,
+                "sources": group.sources or sorted({
+                    finding.source_tool for finding in group.findings
+                    if finding.source_tool
+                }),
+                "count": len(group.findings),
+                "confidence": group.confidence,
+                "evidence": evidence,
+            })
+
+        return sorted(
+            entries,
+            key=lambda entry: entry["finding"].score,
+            reverse=True,
+        )
 
     def _verification_details(self, finding):
         """Return available verification metadata for a finding."""
@@ -41,17 +78,20 @@ class Reporter:
         return p
 
     def write_markdown(self, session):
-        findings = sorted(
-            self._flat_findings(session),
-            key=lambda f: f.score,
-            reverse=True,
-        )
+        entries = self._correlated_findings(session)
+        raw_count = len(self._flat_findings(session))
+        duplicate_count = raw_count - len(entries)
 
         lines = [
-            "# Security Assessment Report\n",
+            "# Security Assessment Report\\n",
             f"- Target: `{session.target}`",
             f"- Profile: `{session.profile}`",
             f"- Session: `{session.session_id}`",
+            f"- Raw findings: **{raw_count}**",
+            f"- Distinct correlated findings: **{len(entries)}**",
+            f"- Related duplicate detections grouped: **{duplicate_count}**",
+            "",
+            "> PhantomX risk score/severity is its normalized prioritization; scanner severity is shown separately when available.",
             "",
             "## Tool Execution",
         ]
@@ -63,47 +103,63 @@ class Reporter:
                 f"findings: {len(result.findings)}"
             )
 
-        lines += ["", "## Findings", ""]
+        lines += ["", "## Workflow Notes", ""]
+        if session.notes:
+            lines.extend(f"- {note}" for note in session.notes)
+        else:
+            lines.append("- No additional workflow notes.")
 
-        if not findings:
+        lines += ["", "## Prioritized Findings", ""]
+
+        if not entries:
             lines.append(
                 "No normalized findings were produced. "
                 "Review raw tool output and validate coverage."
             )
 
-        for finding in findings:
+        for entry in entries:
+            finding = entry["finding"]
+            source_text = ", ".join(entry["sources"]) or "unknown"
+            scanner_severity = finding.scanner_severity or "not provided"
             lines += [
                 f"### {finding.severity.upper()} — {finding.title}",
-                f"- Score: **{finding.score}/100**",
-                f"- Source: `{finding.source_tool}`",
+                f"- PhantomX risk score: **{finding.score}/100**",
+                f"- Scanner severity: `{scanner_severity}`",
+                f"- Source tools: `{source_text}`",
+                f"- Correlated detections: **{entry['count']}**",
+                f"- Correlation confidence: **{entry['confidence']:.2f}**",
                 f"- Category: `{finding.category}`",
-                f"- Evidence: {finding.evidence[:800]}",
-                f"- Recommendation: {finding.recommendation}",
             ]
 
-            verification = self._verification_details(finding)
+            if entry["evidence"]:
+                lines.append("- Evidence:")
+                lines.extend(
+                    f"  - {text[:800]}" for text in entry["evidence"][:5]
+                )
+            else:
+                lines.append("- Evidence: Not provided")
 
+            lines.append(f"- Recommendation: {finding.recommendation}")
+
+            verification = self._verification_details(finding)
             if verification:
                 lines += ["", "**Verification details**"]
                 for label, value in verification:
                     lines.append(f"- {label}: `{value}`")
-
             lines.append("")
 
         p = self.dir / f"report_{session.session_id}.md"
-        p.write_text("\n".join(lines), encoding="utf-8")
+        p.write_text("\\n".join(lines), encoding="utf-8")
         return p
 
     def write_html(self, session):
-        findings = sorted(
-            self._flat_findings(session),
-            key=lambda f: f.score,
-            reverse=True,
-        )
-
+        entries = self._correlated_findings(session)
+        raw_count = len(self._flat_findings(session))
+        duplicate_count = raw_count - len(entries)
         rows = []
 
-        for finding in findings:
+        for entry in entries:
+            finding = entry["finding"]
             verification = self._verification_details(finding)
 
             if verification:
@@ -115,19 +171,27 @@ class Reporter:
             else:
                 verification_html = "&mdash;"
 
+            evidence_html = "<ul>" + "".join(
+                f"<li>{escape(text[:500])}</li>"
+                for text in entry["evidence"][:5]
+            ) + "</ul>" if entry["evidence"] else "&mdash;"
+            sources = ", ".join(entry["sources"]) or "unknown"
+
             rows.append(
                 "<tr>"
                 f"<td>{escape(finding.severity.upper())}</td>"
                 f"<td>{escape(finding.title)}</td>"
                 f"<td>{finding.score}</td>"
-                f"<td>{escape(finding.source_tool)}</td>"
-                f"<td>{escape(finding.evidence[:500])}</td>"
+                f"<td>{escape(finding.scanner_severity or 'not provided')}</td>"
+                f"<td>{escape(sources)}</td>"
+                f"<td>{entry['count']}</td>"
+                f"<td>{evidence_html}</td>"
                 f"<td>{verification_html}</td>"
                 "</tr>"
             )
 
         rows_html = "".join(rows) or (
-            '<tr><td colspan="6">No normalized findings.</td></tr>'
+            '<tr><td colspan="8">No normalized findings.</td></tr>'
         )
 
         html = f"""<!doctype html>
@@ -158,6 +222,17 @@ th {{
 .meta {{
     margin-bottom: 25px;
 }}
+.summary {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    margin: 18px 0 28px;
+}}
+.summary div {{
+    padding: 12px;
+    border: 1px solid #374151;
+    min-width: 150px;
+}}
 ul {{
     margin: 0;
     padding-left: 20px;
@@ -171,14 +246,26 @@ ul {{
 <b>Profile:</b> {escape(str(session.profile))}<br>
 <b>Session:</b> {escape(str(session.session_id))}
 </div>
-<h2>Findings</h2>
+<div class="summary">
+<div><b>Raw findings</b><br>{raw_count}</div>
+<div><b>Distinct findings</b><br>{len(entries)}</div>
+<div><b>Grouped duplicate detections</b><br>{duplicate_count}</div>
+</div>
+<p>PhantomX risk score/severity is its normalized prioritization. Scanner severity is reported separately and may differ.</p>
+<h2>Workflow Notes</h2>
+<ul>
+{''.join(f'<li>{escape(note)}</li>' for note in session.notes) or '<li>No additional workflow notes.</li>'}
+</ul>
+<h2>Prioritized Findings</h2>
 <table>
 <thead>
 <tr>
-<th>Severity</th>
+<th>PhantomX Severity</th>
 <th>Finding</th>
-<th>Score</th>
-<th>Source</th>
+<th>Risk Score</th>
+<th>Scanner Severity</th>
+<th>Source Tools</th>
+<th>Detections</th>
 <th>Evidence</th>
 <th>Verification details</th>
 </tr>

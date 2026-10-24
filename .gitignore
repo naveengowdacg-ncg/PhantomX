@@ -5,3 +5,8 @@ reports/*.json
 reports/*.md
 reports/*.html
 reports/execution.log
+
+# Local assessment history (keep the directory, not the database)
+data/*.sqlite3
+data/*.sqlite
+data/*.db
