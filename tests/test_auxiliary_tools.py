@@ -42,6 +42,26 @@ def test_gobuster_paths_are_discovery_only():
     assert parsed.findings[0].impact == 0
 
 
+def test_gobuster_quiet_output_without_leading_slash_is_parsed():
+    output = (
+        ".htaccess (Status: 403) [Size: 199]\n"
+        "index.html (Status: 200) [Size: 32]\n"
+        "javascript (Status: 301) [Size: 0] [--> http://127.0.0.1/javascript/]"
+    )
+    parsed = Normalizer().parse(result("gobuster", output, target="http://127.0.0.1"))
+
+    assert len(parsed.findings) == 3
+    assert [finding.metadata["path"] for finding in parsed.findings] == [
+        ".htaccess",
+        "index.html",
+        "javascript",
+    ]
+    assert [finding.metadata["status_code"] for finding in parsed.findings] == [403, 200, 301]
+    assert all(finding.category == "observation" for finding in parsed.findings)
+    assert all(finding.metadata["verification_status"] == "path_discovery_only" for finding in parsed.findings)
+    assert all(finding.impact == 0 for finding in parsed.findings)
+
+
 def test_testssl_actionable_lines_are_observations():
     parsed = Normalizer().parse(result("testssl", "TLS 1.0 offered\nCertificate expires soon\nStart 2026-01-01\n"))
     assert len(parsed.findings) == 2
@@ -61,8 +81,11 @@ def test_subfinder_skips_ip_targets_without_invoking_executor():
 def test_config_contains_auxiliary_integrations():
     from core.tool_registry import ToolRegistry
     registry = ToolRegistry("config/tools.json")
-    names = {tool["name"] for tool in registry.list()}
+    tools = registry.list()
+    names = {tool["name"] for tool in tools}
     assert {"subfinder", "dnsx", "httpx", "katana", "testssl", "gobuster"} <= names
+    httpx_tool = next(tool for tool in tools if tool["name"] == "httpx")
+    assert httpx_tool["executable"] == "httpx-toolkit"
 
 
 def test_subfinder_receives_hostname_not_url():

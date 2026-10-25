@@ -134,8 +134,21 @@ class Normalizer:
                 if re.search(r"(TLS|SSL|certificate|cert|cipher|protocol|heartbleed|poodle|sweet32|weak|expired|self.signed|not trusted|vulnerable)", line, re.I) and not re.search(r"(Testing protocols|Start .*|Done .*|Using .*|Hint:|testssl\.sh)", line, re.I):
                     add("TLS configuration observation", line, {"verification_status": "scanner_match_unverified"})
             elif tool == "gobuster":
-                if re.search(r"^/[^\s]*\s+\(Status:\s*\d{3}", line) or re.search(r"^/[^\s]*\s+\(Status:\s*\d{3}", line, re.I):
-                    add("Web path discovered", line, {"verification_status": "path_discovery_only"})
+                match = re.match(
+                    r"^(?P<path>/?\S+)\s+\(Status:\s*(?P<status>\d{3})\)",
+                    line,
+                    re.I,
+                )
+                if match:
+                    add(
+                        "Web path discovered",
+                        line,
+                        {
+                            "verification_status": "path_discovery_only",
+                            "path": match.group("path"),
+                            "status_code": int(match.group("status")),
+                        },
+                    )
             elif tool == "subfinder":
                 if re.fullmatch(r"[A-Za-z0-9._*-]+", line) and "." in line:
                     add("Subdomain discovered", line, {"hostname": line, "verification_status": "passive_discovery_unverified"})

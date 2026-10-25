@@ -87,7 +87,7 @@
     {
       "name": "httpx",
       "category": "recon",
-      "executable": "httpx",
+      "executable": "httpx-toolkit",
       "args": [
         "-u",
         "{target}",
