@@ -2,6 +2,7 @@
 
 import ipaddress
 import re
+from urllib.parse import urlsplit
 
 
 _HOST_LABEL = re.compile(r"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$")
@@ -81,6 +82,46 @@ def _matches_scope(target, entry):
     return target.casefold() == normalized_entry.casefold()
 
 
+def normalize_http_url(value):
+    """Return a canonical HTTP(S) origin and its validated host/port parts."""
+    if not isinstance(value, str) or not value.strip():
+        raise TargetScopeError("Discovered endpoint must be an HTTP or HTTPS URL.")
+    raw = value.strip()
+    if any(char.isspace() for char in raw):
+        raise TargetScopeError("Discovered endpoint URL cannot contain whitespace.")
+    try:
+        parsed = urlsplit(raw)
+        scheme = parsed.scheme.lower()
+        if scheme not in {"http", "https"}:
+            raise TargetScopeError("Only HTTP and HTTPS endpoints can be assessed.")
+        if not parsed.netloc or not parsed.hostname:
+            raise TargetScopeError("Discovered endpoint URL has no valid hostname.")
+        if parsed.username is not None or parsed.password is not None:
+            raise TargetScopeError("Endpoint URLs containing credentials are not accepted.")
+        if parsed.netloc.endswith(":"):
+            raise TargetScopeError("Discovered endpoint URL has an empty port.")
+        host = normalize_target(parsed.hostname)
+        port = parsed.port
+    except ValueError as exc:
+        if isinstance(exc, TargetScopeError):
+            raise
+        raise TargetScopeError(f"Discovered endpoint URL is invalid: {exc}") from exc
+
+    default_port = 443 if scheme == "https" else 80
+    port = default_port if port is None else port
+    if port < 1 or port > 65535:
+        raise TargetScopeError("Endpoint port must be between 1 and 65535.")
+    authority_host = f"[{host}]" if ":" in host else host
+    authority = authority_host if port == default_port else f"{authority_host}:{port}"
+    return {
+        "scheme": scheme,
+        "host": host,
+        "port": port,
+        "url": f"{scheme}://{authority}",
+        "path": parsed.path or "/",
+    }
+
+
 class TargetScope:
     """Validate target syntax and, when enabled, require explicit allowlisting."""
 
@@ -105,3 +146,9 @@ class TargetScope:
                 "authorized_targets only if you have permission to assess it."
             )
         return target
+
+    def validate_url(self, value):
+        """Authorize an HTTP(S) endpoint by its hostname and return its origin."""
+        endpoint = normalize_http_url(value)
+        self.validate(endpoint["host"])
+        return endpoint["url"]

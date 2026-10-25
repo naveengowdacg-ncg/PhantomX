@@ -18,22 +18,50 @@ class DecisionEngine:
     }
 
     def decide(self, results):
-        """
-        Analyze discovery results and return assessment decisions.
+        """Create downstream decisions only from successful discovery results."""
+        from urllib.parse import urlsplit
 
-        Decisions are represented as dictionaries for now. This keeps
-        the decision layer lightweight while the assessment model evolves.
-        """
+        from core.scope import TargetScopeError, normalize_http_url
 
         decisions = []
+        web_tools = ["whatweb", "nikto", "nuclei", "katana", "testssl", "gobuster"]
 
         for result in results:
+            if result.status != "success":
+                continue
+
+            if result.tool == "httpx":
+                for finding in result.findings:
+                    metadata = finding.metadata or {}
+                    raw_url = metadata.get("url")
+                    if not raw_url:
+                        continue
+                    try:
+                        endpoint = normalize_http_url(raw_url)
+                    except TargetScopeError:
+                        continue
+                    decisions.append({
+                        "type": "web_assessment",
+                        "target": endpoint["url"],
+                        "host": endpoint["host"],
+                        "port": endpoint["port"],
+                        "protocol": "tcp",
+                        "service": endpoint["scheme"],
+                        "version": metadata.get("webserver", "") or "",
+                        "source_tool": "httpx",
+                        "endpoint_metadata": {
+                            "discovered_path": urlsplit(raw_url).path or "/",
+                            "status_code": metadata.get("status_code"),
+                        },
+                        "recommended_tools": web_tools,
+                        "reason": f"HTTP service discovered by httpx at {endpoint['url']}.",
+                    })
+                continue
 
             if result.tool != "nmap":
                 continue
 
             for service in result.services:
-
                 if service.state != "open":
                     continue
 
@@ -50,14 +78,9 @@ class DecisionEngine:
                         "protocol": service.protocol,
                         "service": service.service,
                         "version": service.version,
-                        "recommended_tools": [
-                            "whatweb",
-                            "nikto",
-                            "nuclei",
-                            "katana",
-                            "testssl",
-                            "gobuster",
-                        ],
+                        "source_tool": "nmap",
+                        "endpoint_metadata": {},
+                        "recommended_tools": web_tools,
                         "reason": (
                             f"HTTP service discovered on "
                             f"{service.port}/{service.protocol}."
@@ -65,17 +88,20 @@ class DecisionEngine:
                     })
 
                 elif service.port in self.DATABASE_PORTS:
+                    authority_host = (
+                        f"[{result.target}]"
+                        if ":" in result.target and not result.target.startswith("[")
+                        else result.target
+                    )
                     decisions.append({
                         "type": "database_assessment",
-                        "target": f"{result.target}:{service.port}",
+                        "target": f"{authority_host}:{service.port}",
                         "host": result.target,
                         "port": service.port,
                         "protocol": service.protocol,
                         "service": service.service,
                         "version": service.version,
-                        "recommended_tools": [
-                             "nuclei",
-                        ],
+                        "recommended_tools": ["nuclei"],
                         "reason": (
                             f"Database service discovered on "
                             f"{service.port}/{service.protocol}."
@@ -86,11 +112,11 @@ class DecisionEngine:
 
     def _build_web_target(self, host, port, secure):
         scheme = "https" if secure else "http"
-
-        if port in {80, 443}:
-            return f"{scheme}://{host}"
-
-        return f"{scheme}://{host}:{port}"
+        authority_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        default_port = 443 if secure else 80
+        if port == default_port:
+            return f"{scheme}://{authority_host}"
+        return f"{scheme}://{authority_host}:{port}"
 
     def _deduplicate(self, decisions):
         unique = []
@@ -102,10 +128,8 @@ class DecisionEngine:
                 decision["target"],
                 decision["port"],
             )
-
             if key in seen:
                 continue
-
             seen.add(key)
             unique.append(decision)
 
@@ -120,7 +144,7 @@ class DecisionEngine:
 
         for result in results:
 
-            if result.tool != "whatweb":
+            if result.status != "success" or result.tool != "whatweb":
                 continue
 
             for observation in result.observations:

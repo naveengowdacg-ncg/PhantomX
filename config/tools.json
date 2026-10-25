@@ -149,7 +149,10 @@
       ],
       "enabled": true,
       "timeout": 180,
-      "description": "Web path and directory enumeration using a standard wordlist"
+      "description": "Web path and directory enumeration using a standard wordlist",
+      "required_files": [
+        "/usr/share/wordlists/dirb/common.txt"
+      ]
     }
   ]
 }

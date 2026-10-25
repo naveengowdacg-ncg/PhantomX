@@ -8,6 +8,7 @@ from core.executor import ToolExecutor
 from core.logger import get_logger
 from core.models import Session
 from core.tool_registry import ToolRegistry
+from core.preflight import ToolPreflight
 from core.workflow import WorkflowEngine
 
 from analysis.normalizer import Normalizer
@@ -71,6 +72,7 @@ class App:
             authorized_targets=self.settings["authorized_targets"],
         )
         self.registry = ToolRegistry()
+        self.tool_preflight = ToolPreflight()
         self.logger = get_logger(self.settings["reports_dir"])
         self.executor = ToolExecutor(self.logger)
         self.adapter_manager = AdapterManager()
@@ -85,6 +87,7 @@ class App:
             self.risk,
             self.logger,
             max_workers=self.settings["max_workers"],
+            scope=self.scope,
         )
 
         self.reporter = Reporter(
@@ -97,13 +100,31 @@ class App:
 
     def print_tools(self):
         for t in self.registry.list():
+            if not isinstance(t, dict):
+                continue
             state = "ON" if t.get("enabled", True) else "OFF"
 
             print(
-                f"{t['name']:<12} "
-                f"{t['category']:<10} "
+                f"{t.get('name', '<unnamed>'):<12} "
+                f"{t.get('category', '<unknown>'):<10} "
                 f"[{state}]  "
                 f"{t.get('description', '')}"
+            )
+
+    def preflight_tools(self):
+        """Display read-only readiness checks for enabled external tools."""
+        results = self.tool_preflight.inspect(
+            self.registry.list(),
+            registry_error=getattr(self.registry, "load_error", None),
+        )
+        if not results:
+            print("No enabled tools are configured.")
+            return
+        print("\nTOOL PREFLIGHT")
+        for result in results:
+            print(
+                f"[{result['status'].upper()}] {result['name']}: "
+                f"{result['message']}"
             )
     def status(self):
         print("\n" + "=" * 60)
@@ -392,6 +413,7 @@ class App:
         print("""
 Target / tools
   target <host>                              Set authorized target
+  preflight                                   Check enabled tool executables and files
   tools list                                 List registered tools
   tools add <name> <category> <exe> [args]   Add a tool; use {target} placeholder
   tools remove <name>                        Remove a tool from the registry
@@ -400,7 +422,7 @@ Target / tools
 
 Assessment
   scan <tool>                                Run one registered tool
-  scan profile <passive|standard|full|default>       Run a profile
+  scan profile <passive|stealth|standard|full|aggressive|default>  Run a profile
   workflow full                              Run the full adaptive workflow
 
 Reports
@@ -644,6 +666,10 @@ Examples
 
         if cmd == "help":
             self.help()
+            return True
+
+        if cmd == "preflight":
+            self.preflight_tools()
             return True
 
         if cmd == "status":

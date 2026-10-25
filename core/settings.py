@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 
-KNOWN_PROFILES = ("passive", "standard", "full")
+KNOWN_PROFILES = ("passive", "stealth", "standard", "full", "aggressive")
 DEFAULT_SETTINGS = {
     "default_profile": "standard",
     "reports_dir": "reports",

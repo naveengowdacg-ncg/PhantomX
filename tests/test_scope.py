@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from core.scope import TargetScope, TargetScopeError, normalize_target
+from core.scope import TargetScope, TargetScopeError, normalize_http_url, normalize_target
 from core.settings import SettingsError, load_settings
 
 
@@ -115,8 +115,47 @@ def test_scan_revalidates_target_before_execution(capsys):
 def test_settings_reject_unknown_profile(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text(
-        json.dumps({"allowed_profiles": ["aggressive"]}),
+        json.dumps({"allowed_profiles": ["experimental"]}),
         encoding="utf-8",
     )
     with pytest.raises(SettingsError, match="Unknown profile"):
         load_settings(path)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_url", "expected_host", "expected_port"),
+    [
+        ("http://EXAMPLE.test:80/login", "http://example.test", "example.test", 80),
+        ("https://localhost:8443/a", "https://localhost:8443", "localhost", 8443),
+        ("http://[::1]:8080/health", "http://[::1]:8080", "::1", 8080),
+    ],
+)
+def test_http_endpoint_normalization_handles_hosts_ports_and_urls(
+    raw, expected_url, expected_host, expected_port
+):
+    endpoint = normalize_http_url(raw)
+    assert endpoint["url"] == expected_url
+    assert endpoint["host"] == expected_host
+    assert endpoint["port"] == expected_port
+
+
+def test_scope_validate_url_checks_host_and_accepts_localhost_and_ports():
+    scope = TargetScope(True, ["localhost", "::1"])
+    assert scope.validate_url("http://localhost:8080/admin") == "http://localhost:8080"
+    assert scope.validate_url("http://[::1]:80/") == "http://[::1]"
+    with pytest.raises(TargetScopeError, match="outside configured scope"):
+        scope.validate_url("https://outside.test:443/path")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "ftp://example.test",
+        "http://user:pass@example.test",
+        "http://example.test:99999",
+        "http://example.test:",
+    ],
+)
+def test_http_endpoint_normalization_rejects_unsafe_or_malformed_urls(raw):
+    with pytest.raises(TargetScopeError):
+        normalize_http_url(raw)

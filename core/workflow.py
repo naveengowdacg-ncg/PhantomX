@@ -1,10 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 import sys
 import threading
 import time
 from urllib.parse import urlsplit
 
-from core.models import Endpoint
+from core.models import Endpoint, ToolResult
+from core.scope import TargetScopeError, normalize_http_url, normalize_target
 from analysis.decision_engine import DecisionEngine
 from analysis.correlation import CorrelationEngine
 
@@ -13,8 +15,10 @@ class WorkflowEngine:
 
     PROFILES = {
         "passive": ["recon"],
+        "stealth": ["recon"],
         "standard": ["recon", "web"],
         "full": ["recon", "web", "vuln"],
+        "aggressive": ["recon", "web", "vuln"],
     }
 
     WEB_PORTS = {
@@ -97,24 +101,111 @@ class WorkflowEngine:
         return [
             tool
             for tool in self.registry.list()
-            if tool.get("enabled", True)
+            if isinstance(tool, dict)
+            and isinstance(tool.get("name"), str)
+            and isinstance(tool.get("category"), str)
+            and isinstance(tool.get("enabled", True), bool)
+            and tool.get("enabled", True)
             and tool.get("category") in categories
         ]
 
     def _run_tool(self, tool, target, extra_args=None):
-        """Execute, normalize, and score one tool result."""
+        """Execute, normalize, and score one tool result without aborting peers."""
+        try:
+            result = self.adapter_manager.run(
+                tool,
+                target,
+                self.executor,
+                extra_args=extra_args,
+            )
+            result = self.normalizer.parse(result)
+            result.findings = self.risk_engine.score_all(result.findings)
+            return result
+        except Exception as exc:
+            log_exception = getattr(self.logger, "exception", None)
+            if callable(log_exception):
+                log_exception("Tool %s failed in workflow: %s", tool.get("name", "unknown"), exc)
+            now = datetime.now(timezone.utc).isoformat()
+            return ToolResult(
+                tool=tool.get("name", "unknown"),
+                category=tool.get("category", "unknown"),
+                target=target,
+                started_at=now,
+                finished_at=now,
+                return_code=None,
+                status="error",
+                command=[tool.get("executable", "")],
+                stderr=f"Workflow tool error: {exc}",
+            )
 
-        result = self.adapter_manager.run(
-            tool,
-            target,
-            self.executor,
-            extra_args=extra_args,
-        )
+    def _validated_active_target(self, target, session_target):
+        """Authorize a host, host:port, or HTTP(S) endpoint before a probe."""
+        if not isinstance(target, str) or not target.strip():
+            raise TargetScopeError("Active probe target must be a non-empty string.")
+        raw = target.strip()
+        endpoint = normalize_http_url(raw) if "://" in raw else None
+        port = None
 
-        result = self.normalizer.parse(result)
-        result.findings = self.risk_engine.score_all(result.findings)
+        if endpoint:
+            host = endpoint["host"]
+        else:
+            authority = None
+            if raw.startswith("[") or (
+                raw.count(":") == 1 and raw.rsplit(":", 1)[1].isdigit()
+            ):
+                try:
+                    authority = urlsplit("//" + raw)
+                    port = authority.port
+                except ValueError as exc:
+                    raise TargetScopeError(f"Active probe target is invalid: {exc}") from exc
+            if authority is not None and authority.hostname and port is not None:
+                host = normalize_target(authority.hostname)
+                if port < 1 or port > 65535:
+                    raise TargetScopeError("Endpoint port must be between 1 and 65535.")
+            else:
+                host = normalize_target(raw)
 
-        return result
+        if self.scope is not None:
+            approved_host = self.scope.validate(host)
+        else:
+            # Without an injected validator, permit only the already validated
+            # session host. A discovery result cannot authorize a new host.
+            approved_host = normalize_target(session_target)
+            if host != approved_host:
+                raise TargetScopeError(
+                    "No scope validator is configured; discovered hosts must match the session target."
+                )
+
+        if endpoint:
+            default_port = 443 if endpoint["scheme"] == "https" else 80
+            authority_host = f"[{approved_host}]" if ":" in approved_host else approved_host
+            authority = (
+                authority_host
+                if endpoint["port"] == default_port
+                else f"{authority_host}:{endpoint['port']}"
+            )
+            return f"{endpoint['scheme']}://{authority}"
+        if port is not None:
+            authority_host = f"[{approved_host}]" if ":" in approved_host else approved_host
+            return f"{authority_host}:{port}"
+        return approved_host
+
+    def _record_scope_denial(self, session, tool, target, error):
+        note = f"Scope denied: skipped {tool} probe for '{target}': {error}"
+        if note not in session.notes:
+            session.notes.append(note)
+        log = getattr(self.logger, "warning", None) or getattr(self.logger, "info", None)
+        if callable(log):
+            log("%s", note)
+
+    def _run_scoped_tool_with_loading(self, tool, target, session, extra_args=None):
+        """Revalidate a probe target immediately before starting its tool."""
+        try:
+            approved_target = self._validated_active_target(target, session.target)
+        except Exception as exc:
+            self._record_scope_denial(session, tool.get("name", "unknown"), target, exc)
+            return None
+        return self._run_tool_with_loading(tool, approved_target, extra_args=extra_args)
 
     def _find_tool(self, tools, name):
         """Return an enabled tool by name."""
@@ -183,6 +274,16 @@ class WorkflowEngine:
             [tool["name"] for tool in selected],
         )
 
+        try:
+            if self.scope is not None:
+                session.target = self.scope.validate(session.target)
+            else:
+                session.target = normalize_target(session.target)
+        except Exception as exc:
+            self._record_scope_denial(session, "workflow", session.target, exc)
+            self._correlate_session_findings(session)
+            return session
+
         # ---------------------------------------------------------
         # Stage 1: Discovery
         # ---------------------------------------------------------
@@ -223,12 +324,10 @@ class WorkflowEngine:
                         len(result.findings),
                     )
 
-        # Safely enrich passive subdomain discoveries with HTTP metadata.
-        # Newly discovered hosts are actively probed only when the configured
-        # scope explicitly authorizes them (including wildcard/CIDR rules).
+        # Enrich passive subdomain results only when the scope validator approves them.
         subfinder_hosts = []
         for result in discovery_results:
-            if result.tool != "subfinder":
+            if result.tool != "subfinder" or result.status != "success":
                 continue
             for finding in result.findings:
                 hostname = (finding.metadata or {}).get("hostname")
@@ -237,7 +336,7 @@ class WorkflowEngine:
 
         httpx_tool = self._find_tool(selected, "httpx")
         approved_hosts = []
-        if self.scope is not None and httpx_tool is not None:
+        if httpx_tool is not None:
             for host in dict.fromkeys(subfinder_hosts):
                 if len(approved_hosts) >= self.max_discovered_hosts:
                     session.notes.append(
@@ -245,8 +344,9 @@ class WorkflowEngine:
                     )
                     break
                 try:
-                    approved = self.scope.validate(host)
-                except Exception:
+                    approved = self._validated_active_target(host, session.target)
+                except Exception as exc:
+                    self._record_scope_denial(session, "httpx", host, exc)
                     continue
                 if approved != session.target and approved not in approved_hosts:
                     approved_hosts.append(approved)
@@ -255,14 +355,17 @@ class WorkflowEngine:
             with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
                 futures = {
                     pool.submit(
-                        self._run_tool_with_loading,
+                        self._run_scoped_tool_with_loading,
                         httpx_tool,
                         host,
+                        session,
                     ): host
                     for host in approved_hosts
                 }
                 for future in as_completed(futures):
                     result = future.result()
+                    if result is None:
+                        continue
                     session.results.append(result)
                     discovery_results.append(result)
                     self.logger.info(
@@ -290,28 +393,35 @@ class WorkflowEngine:
             )
 
             if decision["type"] == "web_assessment":
+                try:
+                    normalized_url = self._validated_active_target(
+                        decision["target"], session.target
+                    )
+                    endpoint_parts = normalize_http_url(normalized_url)
+                except Exception as exc:
+                    self._record_scope_denial(
+                        session,
+                        decision.get("source_tool", "discovery"),
+                        decision["target"],
+                        exc,
+                    )
+                    continue
 
                 endpoint = Endpoint(
-                    url=decision["target"],
-                    scheme=(
-                        "https"
-                        if decision["target"].startswith("https://")
-                        else "http"
-                    ),
-                    host=decision["host"],
-                    port=decision["port"],
-                    source_tool="nmap",
+                    url=endpoint_parts["url"],
+                    scheme=endpoint_parts["scheme"],
+                    host=endpoint_parts["host"],
+                    port=endpoint_parts["port"],
+                    source_tool=decision.get("source_tool", "nmap"),
                     metadata={
-                        "service": decision["service"],
-                        "version": decision["version"],
+                        "service": decision.get("service", ""),
+                        "version": decision.get("version", ""),
                         "decision": decision["type"],
+                        **decision.get("endpoint_metadata", {}),
                     },
                 )
 
-                if endpoint.url not in {
-                    existing.url
-                    for existing in web_endpoints
-                }:
+                if endpoint.url not in {existing.url for existing in web_endpoints}:
                     web_endpoints.append(endpoint)
 
             elif decision["type"] == "database_assessment":
@@ -321,43 +431,6 @@ class WorkflowEngine:
                     f"{decision['port']}/{decision['protocol']} "
                     f"({decision['service']})."
                 )
-
-        # Promote reachable httpx URLs to endpoints only after checking that
-        # their host is inside the configured authorization scope.
-        existing_endpoint_urls = {endpoint.url for endpoint in web_endpoints}
-        for result in discovery_results:
-            if result.tool != "httpx" or result.status != "success":
-                continue
-            for finding in result.findings:
-                url = (finding.metadata or {}).get("url")
-                if not url:
-                    continue
-                try:
-                    parsed = urlsplit(url)
-                    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-                        continue
-                    if self.scope is not None:
-                        self.scope.validate(parsed.hostname)
-                    elif parsed.hostname != session.target:
-                        # Fail closed for discovered hosts if no scope validator
-                        # was provided to the workflow engine.
-                        continue
-                    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-                    normalized_url = f"{parsed.scheme}://{parsed.netloc or parsed.hostname}"
-                    if normalized_url in existing_endpoint_urls:
-                        continue
-                    endpoint = Endpoint(
-                        url=normalized_url,
-                        scheme=parsed.scheme,
-                        host=parsed.hostname,
-                        port=port,
-                        source_tool="httpx",
-                        metadata={"discovered_path": parsed.path or "/", "status_code": (finding.metadata or {}).get("status_code")},
-                    )
-                    web_endpoints.append(endpoint)
-                    existing_endpoint_urls.add(normalized_url)
-                except Exception:
-                    continue
 
         # ---------------------------------------------------------
         # Stage 3: Prepare adaptive web assessment
@@ -414,10 +487,13 @@ class WorkflowEngine:
                         endpoint.url,
                     )
 
-                    result = self._run_tool_with_loading(
+                    result = self._run_scoped_tool_with_loading(
                         tool,
                         endpoint.url,
+                        session,
                     )
+                    if result is None:
+                        continue
                     result.endpoints.append(endpoint)
 
                     for observation in result.observations:
@@ -436,8 +512,8 @@ class WorkflowEngine:
         elif web_endpoints:
 
             session.notes.append(
-                "Web endpoints discovered, but no recommended "
-                "web assessment tools are enabled."
+                "Web endpoints discovered, but no recommended web assessment "
+                "tools are enabled or included in this profile."
             )
 
 
@@ -481,11 +557,14 @@ class WorkflowEngine:
                     target,
                 )
 
-                result = self._run_tool_with_loading(
+                result = self._run_scoped_tool_with_loading(
                     tool,
                     target,
+                    session,
                     extra_args=["--tags", "mysql"],
                 )
+                if result is None:
+                    continue
 
                 session.results.append(result)
 
@@ -549,10 +628,13 @@ class WorkflowEngine:
                     f"against {target}"
                 )
 
-                result = self._run_tool_with_loading(
+                result = self._run_scoped_tool_with_loading(
                     tool,
-                    target
+                    target,
+                    session,
                 )
+                if result is None:
+                    continue
 
                 # Attach the endpoint that triggered this decision
                 endpoint = next(

@@ -105,3 +105,17 @@ list saved sessions and `load <session_id>` to restore one. The local database i
 intentionally excluded from Git; do not commit live assessment history.
 
 Next milestones: richer parsers, additional wrappers, PDF export, expanded controlled-lab test fixtures, and optional GUI.
+
+## Optional reconnaissance tools (batch integration)
+
+PhantomX can integrate the following optional command-line tools when installed and present in `PATH`: `subfinder`, `dnsx`, ProjectDiscovery `httpx`, `katana`, `testssl.sh`, and `gobuster`. They are enabled in `config/tools.json`; unavailable tools return a missing-tool status rather than being treated as findings. Subfinder is skipped for IP/localhost targets because passive subdomain discovery requires a domain. On Kali/Linux, Gobuster defaults to `/usr/share/wordlists/dirb/common.txt`; change the configured path if your system stores the wordlist elsewhere.
+
+New reconnaissance results are recorded as observations (zero impact/exploitability) until independently validated. Keep target authorization and scope enforcement enabled, especially when reviewing discovered hosts or endpoints.
+
+## Phase 2: workflow scope and tool preflight
+
+Run `preflight` in the CLI to check enabled tools without launching them. Results identify tools as `ready`, `unavailable` (executable not found on PATH), or `misconfigured` (invalid configuration or a missing required file when the executable is available). Tool file dependencies are declared in `config/tools.json` with `required_files`; update that field and the matching tool argument when a wordlist or other input lives elsewhere. Checks use the current operating system's paths and PATH and do not run shell commands.
+
+Profiles select configured tool categories: `passive` and `stealth` select recon tools, `standard` adds web tools, and `full` and `aggressive` include vulnerability tools. `stealth` is a recon-only selection; it does not guarantee low network visibility. Existing `passive` and `full` profile names remain supported.
+
+Discovered HTTP(S) endpoints can drive the existing downstream web decisions. Each derived active probe rechecks the endpoint hostname against `authorized_targets`; a discovery result alone does not authorize a new host. Missing or failed optional tools are recorded and do not stop other workflow stages. HTTPX and Gobuster path results remain observations until independently verified.
