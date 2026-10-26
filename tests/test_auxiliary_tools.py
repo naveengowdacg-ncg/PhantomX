@@ -42,6 +42,19 @@ def test_gobuster_paths_are_discovery_only():
     assert parsed.findings[0].impact == 0
 
 
+def test_normalizing_the_same_tool_result_twice_does_not_duplicate_findings():
+    tool_result = result("gobuster", "admin (Status: 200) [Size: 12]")
+    normalizer = Normalizer()
+
+    first = normalizer.parse(tool_result)
+    finding_id = first.findings[0].finding_id
+    second = normalizer.parse(tool_result)
+
+    assert second is first
+    assert len(second.findings) == 1
+    assert second.findings[0].finding_id == finding_id
+
+
 def test_gobuster_quiet_output_without_leading_slash_is_parsed():
     output = (
         ".htaccess (Status: 403) [Size: 199]\n"
@@ -101,7 +114,8 @@ def test_subfinder_receives_hostname_not_url():
     tool = {"name":"subfinder", "category":"recon", "executable":"subfinder", "args":["-d", "{target}", "-silent"]}
     AuxiliaryAdapter().scan(tool, "https://example.test:443/path", executor)
     assert executor.target == "example.test"
-    assert executor.tool["args"] == ["-d", "example.test", "-silent"]
+    assert executor.tool["args"] == ["-d", "{target}", "-silent"]
+    assert tool["args"] == ["-d", "{target}", "-silent"]
 
 
 # Adaptive integration regressions: configuration alone is not sufficient;
@@ -120,10 +134,22 @@ def test_http_decision_recommends_existing_web_and_vulnerability_scanners():
     assert {"whatweb", "nikto", "nuclei", "katana", "testssl", "gobuster"} <= set(decisions[0]["recommended_tools"])
 
 
-def test_adapter_manager_routes_all_auxiliary_tools_through_shared_adapter():
+def test_adapter_manager_routes_all_tools_through_dedicated_adapters():
     manager = AdapterManager()
-    for name in ("subfinder", "dnsx", "httpx", "katana", "testssl", "gobuster"):
-        assert isinstance(manager.get(name), AuxiliaryAdapter)
+    # Verify each tool has its own dedicated adapter
+    from modules.subfinder.adapter import SubfinderAdapter
+    from modules.dnsx.adapter import DnsxAdapter
+    from modules.httpx.adapter import HttpxAdapter
+    from modules.katana.adapter import KatanaAdapter
+    from modules.testssl.adapter import TestsslAdapter
+    from modules.gobuster.adapter import GobusterAdapter
+    
+    assert isinstance(manager.get("subfinder"), SubfinderAdapter)
+    assert isinstance(manager.get("dnsx"), DnsxAdapter)
+    assert isinstance(manager.get("httpx"), HttpxAdapter)
+    assert isinstance(manager.get("katana"), KatanaAdapter)
+    assert isinstance(manager.get("testssl"), TestsslAdapter)
+    assert isinstance(manager.get("gobuster"), GobusterAdapter)
 
 
 def test_dnsx_skips_ip_targets():

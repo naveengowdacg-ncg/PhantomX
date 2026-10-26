@@ -59,6 +59,10 @@ def test_preflight_reports_missing_required_file_as_misconfigured(tmp_path, monk
         (tool(args="--unsafe"), "args must be a list of strings"),
         (tool(required_files="wordlist.txt"), "required_files must be a list"),
         (tool(executable=""), "executable must be a non-empty"),
+        (tool(timeout=0), "timeout must be a positive integer"),
+        (tool(timeout=True), "timeout must be a positive integer"),
+        (tool(retries=4), "retries must be an integer from 0 to 3"),
+        (tool(retry_on_timeout="yes"), "retry_on_timeout must be true or false"),
     ],
 )
 def test_preflight_marks_malformed_tool_entries(entry, message):
@@ -87,6 +91,18 @@ def test_preflight_skips_disabled_tools_and_does_not_block_ready_peers(monkeypat
     assert len(entries) == 3
 
 
+def test_preflight_reports_case_insensitive_duplicate_names(monkeypatch):
+    monkeypatch.setattr("core.preflight.shutil.which", lambda executable: "/usr/bin/scanner")
+    results = ToolPreflight().inspect([
+        tool(name="Scanner", executable="scanner"),
+        tool(name="scanner", executable="scanner"),
+    ])
+
+    assert len(results) == 2
+    assert all(result["status"] == "misconfigured" for result in results)
+    assert all("unique, ignoring case" in result["message"] for result in results)
+
+
 def test_preflight_reports_malformed_registry_without_replacing_it(tmp_path):
     path = tmp_path / "tools.json"
     original = "{ definitely not json"
@@ -102,6 +118,25 @@ def test_preflight_reports_malformed_registry_without_replacing_it(tmp_path):
     with pytest.raises(ValueError, match="Could not parse"):
         registry.add("new", "recon", "new", [])
     assert path.read_text(encoding="utf-8") == original
+
+
+def test_tool_registry_registration_validates_and_rejects_duplicates(tmp_path):
+    path = tmp_path / "tools.json"
+    path.write_text('{"tools": []}', encoding="utf-8")
+    registry = ToolRegistry(path)
+
+    registry.add("scanner", "recon", "scanner-bin", ["--target", "{target}"])
+    with pytest.raises(ValueError, match="already exists"):
+        registry.add("SCANNER", "recon", "scanner-bin", [])
+    with pytest.raises(ValueError, match="list of strings"):
+        registry.add("other", "recon", "other-bin", "--target")
+    with pytest.raises(ValueError, match="positive integer"):
+        registry.add("other", "recon", "other-bin", [], timeout=True)
+    with pytest.raises(ValueError, match="true or false"):
+        registry.set_enabled("scanner", 1)
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert [item["name"] for item in saved["tools"]] == ["scanner"]
 
 
 def test_preflight_cli_command_displays_actionable_status(capsys, monkeypatch):

@@ -43,6 +43,11 @@ def session_from_dict(data):
         results=[_tool_result(x) for x in data.get("results", [])],
         notes=list(data.get("notes", [])),
         session_id=data["session_id"],
+        asset_intelligence=(
+            dict(data.get("asset_intelligence", {}))
+            if isinstance(data.get("asset_intelligence", {}), dict)
+            else {}
+        ),
     )
 
 
@@ -83,7 +88,7 @@ class SQLiteSessionStore:
 
     def save(self, session):
         """Save or update a session atomically."""
-        payload = json.dumps(session.as_dict(), ensure_ascii=False)
+        payload = json.dumps(session.as_dict(), ensure_ascii=True, allow_nan=False)
         saved_at = datetime.now(timezone.utc).isoformat()
         with self._connect() as db:
             db.execute("""

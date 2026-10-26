@@ -10,7 +10,9 @@ _SPACE = re.compile(r"\s+")
 
 
 def _normalized_title(title):
-    return _SPACE.sub(" ", (title or "").strip().lower())
+    if not isinstance(title, str):
+        return ""
+    return _SPACE.sub(" ", title.strip().lower())
 
 
 def _normalized_endpoint(endpoint):
@@ -22,16 +24,23 @@ def _normalized_endpoint(endpoint):
 
 def _finding_key(finding):
     metadata = finding.metadata if isinstance(finding.metadata, dict) else {}
-    target = (finding.target or "").strip().lower()
-    category = (finding.category or "").strip().lower()
-    port = metadata.get("port")
-    protocol = (metadata.get("protocol") or "").strip().lower()
+    target = finding.target.strip().lower() if isinstance(finding.target, str) else ""
+    category = finding.category.strip().lower() if isinstance(finding.category, str) else ""
+    raw_port = metadata.get("port")
+    port = (
+        str(raw_port).strip()
+        if isinstance(raw_port, (str, int, float)) and not isinstance(raw_port, bool)
+        else None
+    )
+    raw_protocol = metadata.get("protocol")
+    protocol = raw_protocol.strip().lower() if isinstance(raw_protocol, str) else ""
+    evidence = finding.evidence if isinstance(finding.evidence, str) else ""
     endpoint = (
         metadata.get("matched_at")
         or metadata.get("url")
         or metadata.get("endpoint")
         or metadata.get("endpoint_url")
-        or finding.evidence
+        or evidence
     )
     endpoint = _normalized_endpoint(endpoint)
 
@@ -42,8 +51,9 @@ def _finding_key(finding):
     # important because one generic template can emit multiple distinct
     # findings, such as individual missing HTTP security headers.
     template_id = str(metadata.get("template_id") or "").strip().lower()
+    source_tool = finding.source_tool if isinstance(finding.source_tool, str) else ""
     if (
-        (finding.source_tool or "").strip().lower() == "nuclei"
+        source_tool.strip().lower() == "nuclei"
         and template_id
         and endpoint
     ):
@@ -65,7 +75,8 @@ def _finding_key(finding):
             match = _CVE.search(str(value))
             if match:
                 cve_ids.append(match.group(0).upper())
-    evidence_match = _CVE.search((finding.title or "") + " " + (finding.evidence or ""))
+    title_text = finding.title if isinstance(finding.title, str) else ""
+    evidence_match = _CVE.search(title_text + " " + evidence)
     if evidence_match:
         cve_ids.append(evidence_match.group(0).upper())
     if cve_ids:
@@ -77,21 +88,28 @@ def _finding_key(finding):
     service_language = any(token in title for token in (
         "service", "http detected", "open port", "port open",
     ))
-    if port is not None and protocol and category == "network" and service_language:
-        return ("service", target, str(port), protocol)
+    service_discovery = metadata.get("finding_type") == "service_discovery"
+    if (
+        port and protocol and (category == "network" or service_discovery)
+        and service_language
+    ):
+        return ("service", target, port, protocol)
 
     # Otherwise require a specific endpoint/title identity. A shared port alone
     # is insufficient evidence that two findings describe the same issue.
     if endpoint:
         return ("endpoint-finding", target, endpoint, category, title)
-    if port is not None:
-        return ("port-finding", target, str(port), protocol, category, title)
+    if port:
+        return ("port-finding", target, port, protocol, category, title)
     if title:
         return ("specific-finding", target, category, title)
 
     # Missing identifiers and titles should never cause unrelated findings to
     # collapse into one group.
-    return ("independent", target, getattr(finding, "finding_id", id(finding)))
+    finding_id = getattr(finding, "finding_id", id(finding))
+    if not isinstance(finding_id, (str, int, float)) or isinstance(finding_id, bool):
+        finding_id = id(finding)
+    return ("independent", target, str(finding_id))
 
 
 class CorrelationEngine:
@@ -107,7 +125,7 @@ class CorrelationEngine:
             sources = sorted({
                 finding.source_tool
                 for finding in group_findings
-                if finding.source_tool
+                if isinstance(finding.source_tool, str) and finding.source_tool
             })
             correlation_groups.append(CorrelationGroup(
                 target=group_findings[0].target,
@@ -119,13 +137,10 @@ class CorrelationEngine:
         return correlation_groups
 
     def _calculate_confidence(self, findings):
-        if not findings:
-            return 0.0
-        unique_sources = {
-            finding.source_tool for finding in findings if finding.source_tool
-        }
-        if len(unique_sources) >= 3:
-            return 0.95
-        if len(unique_sources) == 2:
-            return 0.85
-        return 0.70
+        """Return a fixed match indicator, not a calibrated probability.
+
+        Existing reports use 0.70 for every multi-record correlation and 0.00
+        for a singleton. The value does not rank match classes, indicate
+        vulnerability confidence, or change with repeated/independent sources.
+        """
+        return 0.70 if len(findings) > 1 else 0.0

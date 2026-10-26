@@ -37,10 +37,5 @@ class AuxiliaryAdapter:
                     command=[tool.get("executable", name)],
                 )
             # Domain enumeration tools accept a hostname, not a URL or host:port.
-            adjusted_tool = dict(tool)
-            adjusted_tool["args"] = [
-                arg.replace("{target}", candidate)
-                for arg in tool.get("args", [])
-            ]
-            return fallback_executor.run(adjusted_tool, candidate)
+            return fallback_executor.run(tool, candidate)
         return fallback_executor.run(tool, target)

@@ -57,12 +57,12 @@ def test_workflow_annotates_cross_tool_correlated_findings():
     first = Finding(
         title="HTTP service", category="network", target="127.0.0.1",
         source_tool="nmap", score=43.8,
-        metadata={"port": 80, "protocol": "tcp"},
+        metadata={"port": 80, "protocol": "tcp", "verification_status": "scanner_match_unverified"},
     )
     second = Finding(
         title="HTTP detected", category="network", target="127.0.0.1",
         source_tool="whatweb", score=34.0,
-        metadata={"port": 80, "protocol": "tcp"},
+        metadata={"port": 80, "protocol": "tcp", "verification_status": "path_discovery_only"},
     )
     session = Session(
         target="127.0.0.1",
@@ -74,7 +74,12 @@ def test_workflow_annotates_cross_tool_correlated_findings():
 
     assert first.metadata["correlation"]["group_size"] == 2
     assert first.metadata["correlation"]["sources"] == ["nmap", "whatweb"]
-    assert second.metadata["correlation"]["confidence"] == 0.85
+    assert second.metadata["correlation"]["confidence"] == 0.70
+    assert second.metadata["correlation"]["verification_conflict"] is True
+    assert second.metadata["correlation"]["verification_statuses"] == [
+        {"source_tool": "nmap", "status": "scanner_match_unverified"},
+        {"source_tool": "whatweb", "status": "path_discovery_only"},
+    ]
     assert any(note.startswith("Finding correlation: 2 raw findings, 1 distinct groups")
                for note in session.notes)
 

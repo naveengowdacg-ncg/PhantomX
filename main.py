@@ -6,7 +6,8 @@ import time
 from core.adapter_manager import AdapterManager
 from core.executor import ToolExecutor
 from core.logger import get_logger
-from core.models import Session
+from core.models import Session, ToolResult
+from datetime import datetime, timezone
 from core.tool_registry import ToolRegistry
 from core.preflight import ToolPreflight
 from core.workflow import WorkflowEngine
@@ -74,7 +75,7 @@ class App:
         self.registry = ToolRegistry()
         self.tool_preflight = ToolPreflight()
         self.logger = get_logger(self.settings["reports_dir"])
-        self.executor = ToolExecutor(self.logger)
+        self.executor = ToolExecutor(self.logger, scope=self.scope)
         self.adapter_manager = AdapterManager()
         self.normalizer = Normalizer()
         self.risk = RiskEngine()
@@ -415,7 +416,12 @@ Target / tools
   target <host>                              Set authorized target
   preflight                                   Check enabled tool executables and files
   tools list                                 List registered tools
-  tools add <name> <category> <exe> [args]   Add a tool; use {target} placeholder
+  tools add <name> <category> <exe> [args...]
+      [--timeout <seconds>] [--retries <0-3>]
+      [--retry-on-timeout <true|false>] [--description <text>]
+      [--profile-modes <mode1,mode2,...>]
+      [--profile-args <mode:arg1,arg2,...> ...]
+      Add a tool; use {target} placeholder in args
   tools remove <name>                        Remove a tool from the registry
   tools enable <name>                        Enable a registered tool
   tools disable <name>                       Disable a registered tool
@@ -424,9 +430,11 @@ Assessment
   scan <tool>                                Run one registered tool
   scan profile <passive|stealth|standard|full|aggressive|default>  Run a profile
   workflow full                              Run the full adaptive workflow
+  passive: Subfinder only; stealth: serial Subfinder + single-target HTTPX
+  standard: recon/web; full: all categories; aggressive: bounded wider Nmap scan
 
 Reports
-  report json|markdown|html|all              Generate report from last session
+  report json|markdown|html|pdf|all           Generate report from last session
   history [limit]                            List saved assessments
   load <session_id>                          Restore a saved assessment
   status                                     Show current PhantomX status
@@ -441,6 +449,8 @@ Examples
   scan profile standard
   workflow full
   tools add custom recon myscanner --target {target} --safe-mode
+  tools add mytool web myscanner -u {target} --timeout 180 --retries 1 --retry-on-timeout true --description "My custom web scanner"
+  tools add mytool vuln myscanner -t {target} --profile-modes standard,full --profile-args full:-deep-scan,{target}
   tools remove custom
 """)
 
@@ -518,24 +528,55 @@ Examples
             f"single:{name}"
         )
 
-        # Specialized Nmap execution path
         print(f"\n[+] Running {name} against {target}...")
+        started_at = datetime.now(timezone.utc).isoformat()
+        start_time = time.perf_counter()
 
-        result = self.adapter_manager.run(
-            tool,
-            target,
-            self.executor,
-        )
+        try:
+            result = self.adapter_manager.run(
+                tool,
+                target,
+                self.executor,
+            )
+        except Exception as exc:
+            result = ToolResult(
+                tool=name,
+                category=tool.get("category", "unknown"),
+                target=target,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                return_code=None,
+                duration_seconds=round(time.perf_counter() - start_time, 3),
+                status="error",
+                command=(
+                    [tool["executable"]]
+                    if isinstance(tool.get("executable"), str)
+                    and tool["executable"]
+                    else []
+                ),
+                stderr=f"Tool execution failed ({type(exc).__name__}): {exc}",
+            )
+            self.logger.exception("Direct scan of %s failed: %s", name, exc)
 
-        # Normalize result into common findings
-        result = self.normalizer.parse(result)
+        try:
+            result = self.normalizer.parse(result)
+        except Exception as exc:
+            result.status = "parse_error"
+            result.stderr = "\n".join(
+                item for item in (result.stderr, f"Normalization failed: {exc}") if item
+            )
+            self.logger.exception("Direct scan normalization for %s failed: %s", name, exc)
+        else:
+            try:
+                result.findings = self.risk.score_all(result.findings)
+            except Exception as exc:
+                result.status = "scoring_error"
+                result.stderr = "\n".join(
+                    item for item in (result.stderr, f"Finding scoring failed: {exc}") if item
+                )
+                self.logger.exception("Direct scan scoring for %s failed: %s", name, exc)
 
-        # Calculate risk scores
-        result.findings = self.risk.score_all(
-            result.findings
-        )
-
-        # Store result in session
+        # Preserve captured output and findings even when later processing fails.
         session.results.append(result)
         self.workflow._correlate_session_findings(session)
 
@@ -607,10 +648,33 @@ Examples
             f"Completed {profile}: "
             f"{total_findings} findings"
         )
+        self.print_execution_summary(session)
 
         print(
             "Use 'report all' to export the session."
         )
+
+    @staticmethod
+    def print_execution_summary(session):
+        """Show the final per-status outcome counts, including unavailable tools."""
+        counts = {}
+        for result in session.results:
+            status = "unavailable" if result.status == "missing" else result.status
+            counts[status] = counts.get(status, 0) + 1
+        if not counts:
+            print("Tool outcomes: no tools executed.")
+            return
+        order = (
+            "success", "skipped", "unavailable", "failed", "timeout",
+            "error", "parse_error", "scoring_error",
+        )
+        summary = ", ".join(
+            f"{name}={counts[name]}" for name in order if counts.get(name)
+        )
+        other = sorted(set(counts) - set(order))
+        if other:
+            summary += ", " + ", ".join(f"{name}={counts[name]}" for name in other)
+        print(f"Tool outcomes: {summary}")
 
     def reports(self, mode):
 
@@ -621,31 +685,22 @@ Examples
             )
             return
 
-        outputs = []
-
-        if mode in {"json", "all"}:
-            outputs.append(
-                self.reporter.write_json(
-                    self.last_session
-                )
-            )
-
-        if mode in {"markdown", "all"}:
-            outputs.append(
-                self.reporter.write_markdown(
-                    self.last_session
-                )
-            )
-
-        if mode in {"html", "all"}:
-            outputs.append(
-                self.reporter.write_html(
-                    self.last_session
-                )
-            )
-
-        for path in outputs:
-            print(f"Created: {path}")
+        writers = {
+            "json": self.reporter.write_json,
+            "markdown": self.reporter.write_markdown,
+            "html": self.reporter.write_html,
+            "pdf": self.reporter.write_pdf,
+        }
+        selected = writers.items() if mode == "all" else [(mode, writers.get(mode))]
+        for name, writer in selected:
+            if writer is None:
+                print("Usage: report json|markdown|html|pdf|all")
+                return
+            try:
+                print(f"Created: {writer(self.last_session)}")
+            except Exception as exc:
+                self.logger.exception("Could not write %s report: %s", name, exc)
+                print(f"[!] Could not write {name} report: {exc}")
 
     def dispatch(self, line):
 
@@ -740,14 +795,93 @@ Examples
                 elif action == "add" and len(parts) >= 5:
 
                     name, category, exe = parts[2:5]
-                    args = parts[5:]
+                    remaining = parts[5:]
+
+                    # Parse optional flags
+                    args = []
+                    timeout = 120
+                    retries = 0
+                    retry_on_timeout = False
+                    description = ""
+                    profile_modes = None
+                    profile_args = None
+
+                    i = 0
+                    while i < len(remaining):
+                        token = remaining[i]
+                        if token == "--timeout" and i + 1 < len(remaining):
+                            try:
+                                timeout = int(remaining[i + 1])
+                                i += 2
+                            except ValueError:
+                                print("Invalid timeout value")
+                                return True
+                        elif token == "--retries" and i + 1 < len(remaining):
+                            try:
+                                retries = int(remaining[i + 1])
+                                if not 0 <= retries <= 3:
+                                    print("Retries must be 0-3")
+                                    return True
+                                i += 2
+                            except ValueError:
+                                print("Invalid retries value")
+                                return True
+                        elif token == "--retry-on-timeout" and i + 1 < len(remaining):
+                            val = remaining[i + 1].lower()
+                            if val not in ("true", "false"):
+                                print("retry-on-timeout must be true or false")
+                                return True
+                            retry_on_timeout = val == "true"
+                            i += 2
+                        elif token == "--description" and i + 1 < len(remaining):
+                            description = remaining[i + 1]
+                            i += 2
+                        elif token == "--profile-modes" and i + 1 < len(remaining):
+                            modes = remaining[i + 1].split(",")
+                            for m in modes:
+                                if m not in self.settings["allowed_profiles"]:
+                                    print(f"Unknown profile mode: {m}")
+                                    return True
+                            profile_modes = modes
+                            i += 2
+                        elif token == "--profile-args" and i + 1 < len(remaining):
+                            # Format: mode:arg1,arg2,...
+                            pa = remaining[i + 1]
+                            if ":" not in pa:
+                                print("Profile args format: mode:arg1,arg2,...")
+                                return True
+                            mode, argstr = pa.split(":", 1)
+                            if mode not in self.settings["allowed_profiles"]:
+                                print(f"Unknown profile mode: {mode}")
+                                return True
+                            if profile_args is None:
+                                profile_args = {}
+                            profile_args[mode] = argstr.split(",")
+                            i += 2
+                        else:
+                            args.append(token)
+                            i += 1
 
                     self.registry.add(
                         name,
                         category,
                         exe,
-                        args
+                        args,
+                        timeout=timeout,
+                        description=description,
+                        retries=retries,
+                        retry_on_timeout=retry_on_timeout,
                     )
+
+                    # Update profile_modes and profile_args if provided
+                    if profile_modes is not None or profile_args is not None:
+                        tool = self.registry.get(name)
+                        if tool:
+                            if profile_modes is not None:
+                                tool["profile_modes"] = profile_modes
+                            if profile_args is not None:
+                                tool["profile_args"] = profile_args
+                            self.registry._save(self.registry.data)
 
                     print(
                         f"Tool added: {name}"
@@ -805,8 +939,8 @@ Examples
             self.load_saved_session(parts[1])
             return True
         if cmd == "report" and len(parts) == 2:
-            if parts[1] not in {"json", "markdown", "html", "all"}:
-                print("Usage: report json|markdown|html|all")
+            if parts[1] not in {"json", "markdown", "html", "pdf", "all"}:
+                print("Usage: report json|markdown|html|pdf|all")
             else:
                 self.reports(parts[1])
             return True
@@ -830,7 +964,16 @@ Examples
                 print()
                 break
 
-            if not self.dispatch(line):
+            try:
+                should_continue = self.dispatch(line)
+            except Exception as exc:
+                logger = getattr(self, "logger", None)
+                log_exception = getattr(logger, "exception", None)
+                if callable(log_exception):
+                    log_exception("CLI command failed: %s", exc)
+                print(f"Command failed safely ({type(exc).__name__}): {exc}")
+                continue
+            if not should_continue:
                 break
 
 

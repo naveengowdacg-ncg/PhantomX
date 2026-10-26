@@ -10,3 +10,10 @@ reports/execution.log
 data/*.sqlite3
 data/*.sqlite
 data/*.db
+
+# SSH keys and local test artifacts
+*_kali_key*
+*_kali_rsa*
+*.pem
+*.pub
+!docs/

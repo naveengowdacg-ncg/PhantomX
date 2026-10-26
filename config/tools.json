@@ -10,18 +10,168 @@
       ],
       "enabled": true,
       "timeout": 180,
-      "description": "Network discovery, port and service detection"
+      "retries": 0,
+      "retry_on_timeout": false,
+      "description": "Network discovery, port and service detection",
+      "profile_args": {
+        "passive": [
+          "-sS",
+          "-T1",
+          "--max-retries",
+          "0",
+          "--host-timeout",
+          "60s",
+          "-p",
+          "22,80,443",
+          "{target}"
+        ],
+        "stealth": [
+          "-sS",
+          "-T2",
+          "--max-retries",
+          "1",
+          "--host-timeout",
+          "120s",
+          "-p",
+          "1-1024",
+          "{target}"
+        ],
+        "standard": [
+          "-sV",
+          "-T3",
+          "--max-retries",
+          "2",
+          "--host-timeout",
+          "180s",
+          "-p",
+          "1-65535",
+          "--version-light",
+          "{target}"
+        ],
+        "full": [
+          "-sV",
+          "-sC",
+          "-T3",
+          "--max-retries",
+          "2",
+          "--host-timeout",
+          "300s",
+          "-p",
+          "1-65535",
+          "--version-intensity",
+          "5",
+          "{target}"
+        ],
+        "aggressive": [
+          "-sV",
+          "-sC",
+          "-T4",
+          "--max-retries",
+          "1",
+          "--host-timeout",
+          "120s",
+          "-p1-65535",
+          "--version-intensity",
+          "7",
+          "--min-rate",
+          "1000",
+          "{target}"
+        ]
+      },
+      "profile_timeout": {
+        "passive": 120,
+        "stealth": 180,
+        "standard": 240,
+        "full": 360,
+        "aggressive": 300
+      },
+      "profile_retries": {
+        "passive": 0,
+        "stealth": 0,
+        "standard": 1,
+        "full": 1,
+        "aggressive": 0
+      },
+      "profile_retry_on_timeout": {
+        "passive": false,
+        "stealth": false,
+        "standard": false,
+        "full": false,
+        "aggressive": false
+      }
     },
     {
       "name": "whatweb",
       "category": "web",
       "executable": "whatweb",
       "args": [
+        "--follow-redirect=never",
+        "--no-errors",
         "{target}"
       ],
       "enabled": true,
       "timeout": 120,
-      "description": "Web technology fingerprinting"
+      "retries": 0,
+      "retry_on_timeout": false,
+      "description": "Web technology fingerprinting",
+      "profile_args": {
+        "passive": [
+          "--follow-redirect=never",
+          "--no-errors",
+          "-a",
+          "1",
+          "{target}"
+        ],
+        "stealth": [
+          "--follow-redirect=never",
+          "--no-errors",
+          "-a",
+          "2",
+          "{target}"
+        ],
+        "standard": [
+          "--follow-redirect=never",
+          "--no-errors",
+          "-a",
+          "3",
+          "{target}"
+        ],
+        "full": [
+          "--follow-redirect=never",
+          "--no-errors",
+          "-a",
+          "3",
+          "{target}"
+        ],
+        "aggressive": [
+          "--follow-redirect=never",
+          "--no-errors",
+          "-a",
+          "4",
+          "{target}"
+        ]
+      },
+      "profile_timeout": {
+        "passive": 60,
+        "stealth": 90,
+        "standard": 120,
+        "full": 150,
+        "aggressive": 180
+      },
+      "profile_retries": {
+        "passive": 0,
+        "stealth": 0,
+        "standard": 0,
+        "full": 0,
+        "aggressive": 0
+      },
+      "profile_retry_on_timeout": {
+        "passive": false,
+        "stealth": false,
+        "standard": false,
+        "full": false,
+        "aggressive": false
+      }
     },
     {
       "name": "nikto",
@@ -39,7 +189,79 @@
       ],
       "enabled": true,
       "timeout": 150,
-      "description": "Web server security assessment"
+      "retries": 0,
+      "retry_on_timeout": false,
+      "description": "Web server security assessment",
+      "profile_args": {
+        "passive": [],
+        "stealth": [
+          "-nointeractive",
+          "-ask",
+          "no",
+          "-nolookup",
+          "-maxtime",
+          "60s",
+          "-Tuning",
+          "1",
+          "-h",
+          "{target}"
+        ],
+        "standard": [
+          "-nointeractive",
+          "-ask",
+          "no",
+          "-nolookup",
+          "-maxtime",
+          "120s",
+          "-h",
+          "{target}"
+        ],
+        "full": [
+          "-nointeractive",
+          "-ask",
+          "no",
+          "-nolookup",
+          "-maxtime",
+          "180s",
+          "-Tuning",
+          "123bde",
+          "-h",
+          "{target}"
+        ],
+        "aggressive": [
+          "-nointeractive",
+          "-ask",
+          "no",
+          "-nolookup",
+          "-maxtime",
+          "300s",
+          "-Tuning",
+          "123bde",
+          "-h",
+          "{target}"
+        ]
+      },
+      "profile_timeout": {
+        "passive": 60,
+        "stealth": 90,
+        "standard": 150,
+        "full": 240,
+        "aggressive": 360
+      },
+      "profile_retries": {
+        "passive": 0,
+        "stealth": 0,
+        "standard": 0,
+        "full": 0,
+        "aggressive": 0
+      },
+      "profile_retry_on_timeout": {
+        "passive": false,
+        "stealth": false,
+        "standard": false,
+        "full": false,
+        "aggressive": false
+      }
     },
     {
       "name": "nuclei",
@@ -48,11 +270,101 @@
       "args": [
         "-u",
         "{target}",
-        "-jsonl"
+        "-disable-redirects",
+        "-jsonl",
+        "-duc"
       ],
       "enabled": true,
       "timeout": 300,
-      "description": "Template-based vulnerability detection"
+      "retries": 0,
+      "retry_on_timeout": false,
+      "description": "Template-based vulnerability detection",
+      "profile_args": {
+        "passive": [],
+        "stealth": [
+          "-u",
+          "{target}",
+          "-disable-redirects",
+          "-jsonl",
+          "-duc",
+          "-rate-limit",
+          "10",
+          "-c",
+          "5",
+          "-severity",
+          "critical,high",
+          "-timeout",
+          "10"
+        ],
+        "standard": [
+          "-u",
+          "{target}",
+          "-disable-redirects",
+          "-jsonl",
+          "-duc",
+          "-rate-limit",
+          "25",
+          "-c",
+          "25",
+          "-severity",
+          "critical,high,medium",
+          "-timeout",
+          "15"
+        ],
+        "full": [
+          "-u",
+          "{target}",
+          "-disable-redirects",
+          "-jsonl",
+          "-duc",
+          "-rate-limit",
+          "50",
+          "-c",
+          "50",
+          "-severity",
+          "critical,high,medium,low",
+          "-timeout",
+          "20"
+        ],
+        "aggressive": [
+          "-u",
+          "{target}",
+          "-disable-redirects",
+          "-jsonl",
+          "-duc",
+          "-rate-limit",
+          "100",
+          "-c",
+          "100",
+          "-severity",
+          "critical,high,medium,low,info",
+          "-timeout",
+          "30",
+          "-retries",
+          "1"
+        ]
+      },
+      "profile_timeout": {
+        "passive": 60,
+        "stealth": 120,
+        "standard": 180,
+        "full": 300,
+        "aggressive": 360
+      },
+      "profile_retries": {
+        "passive": 0,
+        "stealth": 0,
+        "standard": 0,
+        "full": 1,
+        "aggressive": 1
+      },
+      "profile_retry_on_timeout": {
+        "passive": false,
+        "stealth": false,
+        "standard": false,
+        "full": false,
+        "aggressive": true
+      }
     },
     {
       "name": "subfinder",
@@ -61,28 +373,219 @@
       "args": [
         "-d",
         "{target}",
-        "-silent"
+        "-silent",
+        "-duc"
       ],
       "enabled": true,
       "timeout": 90,
-      "description": "Passive subdomain discovery for domain targets"
+      "retries": 0,
+      "retry_on_timeout": false,
+      "description": "Passive subdomain discovery for domain targets",
+      "profile_modes": [
+        "passive",
+        "stealth",
+        "standard",
+        "full",
+        "aggressive"
+      ],
+      "profile_args": {
+        "passive": [
+          "-d",
+          "{target}",
+          "-silent",
+          "-duc",
+          "-all",
+          "-recursive"
+        ],
+        "stealth": [
+          "-d",
+          "{target}",
+          "-silent",
+          "-duc",
+          "-all",
+          "-recursive",
+          "-timeout",
+          "30"
+        ],
+        "standard": [
+          "-d",
+          "{target}",
+          "-silent",
+          "-duc",
+          "-all",
+          "-recursive",
+          "-timeout",
+          "60"
+        ],
+        "full": [
+          "-d",
+          "{target}",
+          "-silent",
+          "-duc",
+          "-all",
+          "-recursive",
+          "-timeout",
+          "120"
+        ],
+        "aggressive": [
+          "-d",
+          "{target}",
+          "-silent",
+          "-duc",
+          "-all",
+          "-recursive",
+          "-timeout",
+          "180"
+        ]
+      },
+      "profile_timeout": {
+        "passive": 120,
+        "stealth": 90,
+        "standard": 120,
+        "full": 180,
+        "aggressive": 240
+      },
+      "profile_retries": {
+        "passive": 0,
+        "stealth": 0,
+        "standard": 0,
+        "full": 0,
+        "aggressive": 0
+      },
+      "profile_retry_on_timeout": {
+        "passive": false,
+        "stealth": false,
+        "standard": false,
+        "full": false,
+        "aggressive": false
+      }
     },
     {
       "name": "dnsx",
       "category": "recon",
       "executable": "dnsx",
       "args": [
-        "-d",
+        "-l",
         "{target}",
         "-a",
         "-aaaa",
         "-cname",
         "-resp",
-        "-silent"
+        "-silent",
+        "-duc"
       ],
       "enabled": true,
       "timeout": 60,
-      "description": "DNS record and resolution enrichment"
+      "retries": 0,
+      "retry_on_timeout": false,
+      "description": "DNS record and resolution enrichment",
+      "profile_args": {
+        "passive": [
+          "-l",
+          "{target}",
+          "-a",
+          "-aaaa",
+          "-cname",
+          "-resp",
+          "-silent",
+          "-duc"
+        ],
+        "stealth": [
+          "-l",
+          "{target}",
+          "-a",
+          "-aaaa",
+          "-cname",
+          "-resp",
+          "-silent",
+          "-duc",
+          "-r",
+          "1.1.1.1",
+          "-retry",
+          "1"
+        ],
+        "standard": [
+          "-l",
+          "{target}",
+          "-a",
+          "-aaaa",
+          "-cname",
+          "-resp",
+          "-silent",
+          "-duc",
+          "-r",
+          "1.1.1.1",
+          "-r",
+          "8.8.8.8",
+          "-retry",
+          "2"
+        ],
+        "full": [
+          "-l",
+          "{target}",
+          "-a",
+          "-aaaa",
+          "-cname",
+          "-mx",
+          "-ns",
+          "-txt",
+          "-resp",
+          "-silent",
+          "-duc",
+          "-r",
+          "1.1.1.1",
+          "-r",
+          "8.8.8.8",
+          "-r",
+          "9.9.9.9",
+          "-retry",
+          "3"
+        ],
+        "aggressive": [
+          "-l",
+          "{target}",
+          "-a",
+          "-aaaa",
+          "-cname",
+          "-mx",
+          "-ns",
+          "-txt",
+          "-soa",
+          "-ptr",
+          "-resp",
+          "-silent",
+          "-duc",
+          "-r",
+          "1.1.1.1",
+          "-r",
+          "8.8.8.8",
+          "-r",
+          "9.9.9.9",
+          "-retry",
+          "3"
+        ]
+      },
+      "profile_timeout": {
+        "passive": 30,
+        "stealth": 45,
+        "standard": 60,
+        "full": 90,
+        "aggressive": 120
+      },
+      "profile_retries": {
+        "passive": 0,
+        "stealth": 0,
+        "standard": 0,
+        "full": 0,
+        "aggressive": 0
+      },
+      "profile_retry_on_timeout": {
+        "passive": false,
+        "stealth": false,
+        "standard": false,
+        "full": false,
+        "aggressive": false
+      }
     },
     {
       "name": "httpx",
@@ -96,11 +599,119 @@
         "-tech-detect",
         "-server",
         "-json",
-        "-silent"
+        "-silent",
+        "-duc"
       ],
       "enabled": true,
       "timeout": 90,
-      "description": "HTTP service validation and metadata collection"
+      "retries": 0,
+      "retry_on_timeout": false,
+      "description": "HTTP service validation and metadata collection",
+      "profile_modes": [
+        "stealth",
+        "standard",
+        "full",
+        "aggressive"
+      ],
+      "profile_args": {
+        "passive": [],
+        "stealth": [
+          "-u",
+          "{target}",
+          "-status-code",
+          "-title",
+          "-tech-detect",
+          "-server",
+          "-json",
+          "-silent",
+          "-duc",
+          "-rate-limit",
+          "5",
+          "-timeout",
+          "10",
+          "-retries",
+          "0",
+          "-no-fallback"
+        ],
+        "standard": [
+          "-u",
+          "{target}",
+          "-status-code",
+          "-title",
+          "-tech-detect",
+          "-server",
+          "-json",
+          "-silent",
+          "-duc",
+          "-rate-limit",
+          "20",
+          "-timeout",
+          "15",
+          "-retries",
+          "1",
+          "-no-fallback"
+        ],
+        "full": [
+          "-u",
+          "{target}",
+          "-status-code",
+          "-title",
+          "-tech-detect",
+          "-server",
+          "-cdn",
+          "-json",
+          "-silent",
+          "-duc",
+          "-rate-limit",
+          "50",
+          "-timeout",
+          "20",
+          "-retries",
+          "2",
+          "-no-fallback"
+        ],
+        "aggressive": [
+          "-u",
+          "{target}",
+          "-status-code",
+          "-title",
+          "-tech-detect",
+          "-server",
+          "-cdn",
+          "-json",
+          "-silent",
+          "-duc",
+          "-rate-limit",
+          "100",
+          "-timeout",
+          "30",
+          "-retries",
+          "2",
+          "-no-fallback",
+          "-follow-redirects"
+        ]
+      },
+      "profile_timeout": {
+        "passive": 30,
+        "stealth": 60,
+        "standard": 90,
+        "full": 120,
+        "aggressive": 180
+      },
+      "profile_retries": {
+        "passive": 0,
+        "stealth": 0,
+        "standard": 1,
+        "full": 2,
+        "aggressive": 2
+      },
+      "profile_retry_on_timeout": {
+        "passive": false,
+        "stealth": false,
+        "standard": false,
+        "full": false,
+        "aggressive": false
+      }
     },
     {
       "name": "katana",
@@ -112,11 +723,92 @@
         "-silent",
         "-jsonl",
         "-d",
-        "2"
+        "2",
+        "-disable-redirects",
+        "-fs",
+        "fqdn",
+        "-duc"
       ],
       "enabled": true,
       "timeout": 120,
-      "description": "Shallow web crawling and endpoint discovery"
+      "description": "Shallow web crawling and endpoint discovery",
+      "profile_args": {
+        "passive": [],
+        "stealth": [
+          "-u",
+          "{target}",
+          "-silent",
+          "-jsonl",
+          "-d",
+          "1",
+          "-disable-redirects",
+          "-fs",
+          "fqdn",
+          "-duc",
+          "-rate-limit",
+          "5",
+          "-c",
+          "5",
+          "-timeout",
+          "10"
+        ],
+        "standard": [
+          "-u",
+          "{target}",
+          "-silent",
+          "-jsonl",
+          "-d",
+          "2",
+          "-disable-redirects",
+          "-fs",
+          "fqdn",
+          "-duc",
+          "-rate-limit",
+          "20",
+          "-c",
+          "20",
+          "-timeout",
+          "15"
+        ],
+        "full": [
+          "-u",
+          "{target}",
+          "-silent",
+          "-jsonl",
+          "-d",
+          "3",
+          "-disable-redirects",
+          "-fs",
+          "fqdn",
+          "-duc",
+          "-rate-limit",
+          "50",
+          "-c",
+          "50",
+          "-timeout",
+          "20"
+        ],
+        "aggressive": [
+          "-u",
+          "{target}",
+          "-silent",
+          "-jsonl",
+          "-d",
+          "4",
+          "-disable-redirects",
+          "-fs",
+          "fqdn",
+          "-duc",
+          "-rate-limit",
+          "100",
+          "-c",
+          "100",
+          "-timeout",
+          "30",
+          "-retry",
+          "2"
+        ]
+      }
     },
     {
       "name": "testssl",
@@ -130,7 +822,59 @@
       ],
       "enabled": true,
       "timeout": 180,
-      "description": "TLS protocol and certificate configuration assessment"
+      "description": "TLS protocol and certificate configuration assessment",
+      "profile_args": {
+        "passive": [],
+        "stealth": [
+          "--fast",
+          "--warnings",
+          "off",
+          "--quiet",
+          "{target}"
+        ],
+        "standard": [
+          "--fast",
+          "--warnings",
+          "off",
+          "{target}"
+        ],
+        "full": [
+          "--fast",
+          "--warnings",
+          "off",
+          "--openssl",
+          "{target}"
+        ],
+        "aggressive": [
+          "--fast",
+          "--warnings",
+          "off",
+          "--openssl",
+          "--sni",
+          "{target}"
+        ]
+      },
+      "profile_timeout": {
+        "passive": 60,
+        "stealth": 120,
+        "standard": 180,
+        "full": 240,
+        "aggressive": 300
+      },
+      "profile_retries": {
+        "passive": 0,
+        "stealth": 0,
+        "standard": 0,
+        "full": 1,
+        "aggressive": 1
+      },
+      "profile_retry_on_timeout": {
+        "passive": false,
+        "stealth": false,
+        "standard": false,
+        "full": false,
+        "aggressive": true
+      }
     },
     {
       "name": "gobuster",
@@ -152,7 +896,87 @@
       "description": "Web path and directory enumeration using a standard wordlist",
       "required_files": [
         "/usr/share/wordlists/dirb/common.txt"
-      ]
+      ],
+      "profile_args": {
+        "passive": [],
+        "stealth": [
+          "dir",
+          "-u",
+          "{target}",
+          "-w",
+          "/usr/share/wordlists/dirb/common.txt",
+          "-q",
+          "-t",
+          "5",
+          "--no-error",
+          "-timeout",
+          "10s"
+        ],
+        "standard": [
+          "dir",
+          "-u",
+          "{target}",
+          "-w",
+          "/usr/share/wordlists/dirb/common.txt",
+          "-q",
+          "-t",
+          "10",
+          "--no-error",
+          "-timeout",
+          "15s"
+        ],
+        "full": [
+          "dir",
+          "-u",
+          "{target}",
+          "-w",
+          "/usr/share/wordlists/dirb/common.txt",
+          "-q",
+          "-t",
+          "20",
+          "--no-error",
+          "-timeout",
+          "20s",
+          "-x",
+          "php,html,js,txt,xml,json"
+        ],
+        "aggressive": [
+          "dir",
+          "-u",
+          "{target}",
+          "-w",
+          "/usr/share/wordlists/dirb/big.txt",
+          "-q",
+          "-t",
+          "30",
+          "--no-error",
+          "-timeout",
+          "30s",
+          "-x",
+          "php,html,js,txt,xml,json,asp,aspx,jsp,zip,tar,gz,bak,old,config"
+        ]
+      },
+      "profile_timeout": {
+        "passive": 60,
+        "stealth": 120,
+        "standard": 180,
+        "full": 240,
+        "aggressive": 300
+      },
+      "profile_retries": {
+        "passive": 0,
+        "stealth": 0,
+        "standard": 1,
+        "full": 1,
+        "aggressive": 2
+      },
+      "profile_retry_on_timeout": {
+        "passive": false,
+        "stealth": false,
+        "standard": false,
+        "full": false,
+        "aggressive": true
+      }
     }
   ]
 }

@@ -315,3 +315,35 @@ def test_missing_failed_or_unusable_discovery_does_not_run_downstream(mode):
     assert not any(name == "whatweb" for name, _ in executor.calls)
     if mode == "tool_exception":
         assert {result.status for result in session.results} == {"missing", "error"}
+
+
+def test_parser_failure_preserves_raw_output_and_peer_results():
+    def handle(tool, target):
+        if tool["name"] == "nmap":
+            return make_result(
+                "nmap", "recon", target, stdout="raw nmap output survives",
+            )
+        return make_result("httpx", "recon", target, stdout=httpx_output("http://127.0.0.1"))
+
+    engine, _, _ = make_engine(
+        [make_tool("nmap", "recon"), make_tool("httpx", "recon")],
+        handle,
+        TargetScope(True, ["127.0.0.1"]),
+    )
+
+    class SelectiveParserFailure:
+        def parse(self, result):
+            if result.tool == "nmap":
+                raise ValueError("simulated parser failure")
+            return Normalizer().parse(result)
+
+    engine.normalizer = SelectiveParserFailure()
+    session = engine.run(Session(target="127.0.0.1", profile="standard"))
+
+    nmap_result = next(result for result in session.results if result.tool == "nmap")
+    httpx_result = next(result for result in session.results if result.tool == "httpx")
+    assert nmap_result.status == "parse_error"
+    assert nmap_result.stdout == "raw nmap output survives"
+    assert "simulated parser failure" in nmap_result.stderr
+    assert len(httpx_result.findings) == 1
+    assert httpx_result.findings[0].category == "observation"

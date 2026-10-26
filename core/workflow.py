@@ -9,9 +9,23 @@ from core.models import Endpoint, ToolResult
 from core.scope import TargetScopeError, normalize_http_url, normalize_target
 from analysis.decision_engine import DecisionEngine
 from analysis.correlation import CorrelationEngine
+from analysis.asset_intelligence import AssetIntelligenceBuilder
 
 class WorkflowEngine:
     """Adaptive, profile-driven assessment workflow."""
+
+    # Recon category alone must never make a scanner passive or low-impact.
+    RESTRICTED_PROFILE_TOOLS = {
+        "passive": {"subfinder"},
+        "stealth": {"subfinder", "httpx"},
+    }
+    PROFILE_SEMANTICS = {
+        "passive": "Passive discovery only; no direct target probes or downstream assessments.",
+        "stealth": "Single-target, low-volume HTTP metadata plus passive discovery; no downstream assessments. This is not invisible scanning.",
+        "standard": "Reconnaissance and web assessment; vulnerability-category tools are excluded.",
+        "full": "All enabled reconnaissance, web, and vulnerability-category tools.",
+        "aggressive": "Full tool selection with the bounded aggressive Nmap arguments configured for this profile; no exploitation framework.",
+    }
 
     PROFILES = {
         "passive": ["recon"],
@@ -50,6 +64,11 @@ class WorkflowEngine:
         self.max_workers = max_workers
         self.scope = scope
         self.max_discovered_hosts = 25
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        """Request cancellation of in-flight external tools."""
+        self._cancel_event.set()
 
     def _show_loading(self, message, stop_event):
         """Display a simple loading spinner while a tool is running."""
@@ -93,21 +112,100 @@ class WorkflowEngine:
             stop_event.set()
             loading_thread.join()
 
+    def _worker_failure_result(self, tool, target, stage, error):
+        """Represent an unexpected worker exception without losing its context."""
+        tool = tool if isinstance(tool, dict) else {}
+        name = tool.get("name")
+        category = tool.get("category")
+        executable = tool.get("executable")
+        name = name if isinstance(name, str) and name else "unknown"
+        category = category if isinstance(category, str) and category else "unknown"
+        command = [executable] if isinstance(executable, str) and executable else []
+        now = datetime.now(timezone.utc).isoformat()
+        detail = f"{stage} worker failed ({type(error).__name__}): {error}"
+        return ToolResult(
+            tool=name,
+            category=category,
+            target=target,
+            started_at=now,
+            finished_at=now,
+            return_code=None,
+            status="error",
+            command=command,
+            stderr=detail,
+        )
+
     def tools_for_profile(self, profile):
         if profile not in self.PROFILES:
             raise ValueError(f"Unknown scan profile: {profile}")
         categories = self.PROFILES[profile]
+        selected = []
+        for configured_tool in self.registry.list():
+            if not isinstance(configured_tool, dict):
+                continue
+            name = configured_tool.get("name")
+            category = configured_tool.get("category")
+            enabled = configured_tool.get("enabled", True)
+            if (
+                not isinstance(name, str)
+                or not isinstance(category, str)
+                or not isinstance(enabled, bool)
+                or not enabled
+            ):
+                continue
 
-        return [
-            tool
-            for tool in self.registry.list()
-            if isinstance(tool, dict)
-            and isinstance(tool.get("name"), str)
-            and isinstance(tool.get("category"), str)
-            and isinstance(tool.get("enabled", True), bool)
-            and tool.get("enabled", True)
-            and tool.get("category") in categories
-        ]
+            modes = configured_tool.get("profile_modes")
+            if modes is not None and (
+                not isinstance(modes, list)
+                or any(
+                    not isinstance(item, str) or item not in self.PROFILES
+                    for item in modes
+                )
+            ):
+                # Malformed profile restrictions must never widen selection.
+                continue
+            if profile in self.RESTRICTED_PROFILE_TOOLS:
+                if isinstance(modes, list):
+                    eligible = profile in modes
+                else:
+                    eligible = name.casefold() in self.RESTRICTED_PROFILE_TOOLS[profile]
+                if not eligible or category != "recon":
+                    continue
+            elif category not in categories:
+                continue
+            elif isinstance(modes, list) and profile not in modes:
+                continue
+
+            tool = dict(configured_tool)
+            profile_args = tool.get("profile_args")
+            if isinstance(profile_args, dict) and profile in profile_args:
+                selected_args = profile_args[profile]
+                if not isinstance(selected_args, list) or any(
+                    not isinstance(arg, str) for arg in selected_args
+                ):
+                    raise ValueError(
+                        f"Invalid {profile} profile_args for tool {name}."
+                    )
+                tool["args"] = list(selected_args)
+            profile_timeout = tool.get("profile_timeout")
+            if isinstance(profile_timeout, dict) and profile in profile_timeout:
+                tool["timeout"] = profile_timeout[profile]
+            profile_retries = tool.get("profile_retries")
+            if isinstance(profile_retries, dict) and profile in profile_retries:
+                tool["retries"] = profile_retries[profile]
+            profile_retry_on_timeout = tool.get("profile_retry_on_timeout")
+            if isinstance(profile_retry_on_timeout, dict) and profile in profile_retry_on_timeout:
+                tool["retry_on_timeout"] = profile_retry_on_timeout[profile]
+            selected.append(tool)
+        return selected
+
+    def _worker_limit(self, profile):
+        """Apply explicit concurrency caps to low-footprint and aggressive modes."""
+        if profile == "stealth":
+            return 1
+        if profile == "aggressive":
+            return min(self.max_workers, 4)
+        return self.max_workers
 
     def _run_tool(self, tool, target, extra_args=None):
         """Execute, normalize, and score one tool result without aborting peers."""
@@ -118,9 +216,6 @@ class WorkflowEngine:
                 self.executor,
                 extra_args=extra_args,
             )
-            result = self.normalizer.parse(result)
-            result.findings = self.risk_engine.score_all(result.findings)
-            return result
         except Exception as exc:
             log_exception = getattr(self.logger, "exception", None)
             if callable(log_exception):
@@ -137,6 +232,30 @@ class WorkflowEngine:
                 command=[tool.get("executable", "")],
                 stderr=f"Workflow tool error: {exc}",
             )
+
+        try:
+            result = self.normalizer.parse(result)
+        except Exception as exc:
+            result.status = "parse_error"
+            result.stderr = "\n".join(
+                item for item in (result.stderr, f"Normalization failed: {exc}") if item
+            )
+            log_exception = getattr(self.logger, "exception", None)
+            if callable(log_exception):
+                log_exception("Tool %s output normalization failed: %s", result.tool, exc)
+            return result
+
+        try:
+            result.findings = self.risk_engine.score_all(result.findings)
+        except Exception as exc:
+            result.status = "scoring_error"
+            result.stderr = "\n".join(
+                item for item in (result.stderr, f"Finding scoring failed: {exc}") if item
+            )
+            log_exception = getattr(self.logger, "exception", None)
+            if callable(log_exception):
+                log_exception("Tool %s finding scoring failed: %s", result.tool, exc)
+        return result
 
     def _validated_active_target(self, target, session_target):
         """Authorize a host, host:port, or HTTP(S) endpoint before a probe."""
@@ -207,6 +326,45 @@ class WorkflowEngine:
             return None
         return self._run_tool_with_loading(tool, approved_target, extra_args=extra_args)
 
+    def _collect_tool_futures(self, futures, session, stage, on_result):
+        """Collect peer results independently and stop child processes on Ctrl+C."""
+        seen = set()
+
+        def collect(future):
+            seen.add(future)
+            context = futures[future]
+            if isinstance(context, tuple) and len(context) == 2:
+                tool, target = context
+            else:
+                tool, target = context, session.target
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = self._worker_failure_result(
+                    tool, target, stage, exc
+                )
+                note = f"{result.stderr} for {result.tool} against {result.target}."
+                if note not in session.notes:
+                    session.notes.append(note)
+                log_exception = getattr(self.logger, "exception", None)
+                if callable(log_exception):
+                    log_exception("%s worker for %s failed: %s", stage, result.tool, exc)
+            on_result(result)
+
+        try:
+            for future in as_completed(futures):
+                collect(future)
+        except KeyboardInterrupt:
+            self.cancel()
+            note = "Workflow interrupted; active scanner processes are being stopped."
+            if note not in session.notes:
+                session.notes.append(note)
+            # Keep queued tasks as audit rows; the shared event prevents them
+            # from launching a scanner after cancellation.
+            for future in as_completed(futures):
+                if future not in seen:
+                    collect(future)
+
     def _find_tool(self, tools, name):
         """Return an enabled tool by name."""
 
@@ -258,6 +416,29 @@ class WorkflowEngine:
         return endpoints
 
     def run(self, session):
+        """Run one workflow and release its cancellation signal when finished."""
+        self._cancel_event.clear()
+        set_cancel_event = getattr(self.executor, "set_cancel_event", None)
+        if callable(set_cancel_event):
+            set_cancel_event(self._cancel_event)
+        try:
+            return self._run(session)
+        finally:
+            if callable(set_cancel_event):
+                set_cancel_event(None)
+            for result in session.results:
+                if result.status in {
+                    "missing", "misconfigured", "scope_denied", "timeout",
+                    "cancelled", "output_limited", "parse_error", "scoring_error", "error",
+                }:
+                    note = (
+                        f"Tool {result.tool} finished with status {result.status}: "
+                        f"{(result.stderr or 'no diagnostic provided')[:500]}"
+                    )
+                    if note not in session.notes:
+                        session.notes.append(note)
+
+    def _run(self, session):
         """
         Execute an adaptive workflow.
 
@@ -266,6 +447,35 @@ class WorkflowEngine:
         """
 
         selected = self.tools_for_profile(session.profile)
+
+        semantics = self.PROFILE_SEMANTICS.get(session.profile)
+        if semantics:
+            note = f"Profile semantics: {semantics}"
+            if note not in session.notes:
+                session.notes.append(note)
+        selected_names = {tool["name"] for tool in selected}
+        configured = [
+            tool for tool in self.registry.list()
+            if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+        ]
+        disabled_names = list(dict.fromkeys(
+            tool["name"] for tool in configured
+            if tool.get("enabled", True) is False
+        ))
+        excluded_names = list(dict.fromkeys(
+            tool["name"] for tool in configured
+            if tool.get("enabled", True) is True
+            and tool["name"] not in selected_names
+        ))
+        if disabled_names:
+            session.notes.append(
+                "Disabled tools not run: " + ", ".join(disabled_names) + "."
+            )
+        if excluded_names:
+            session.notes.append(
+                f"Tools not selected by profile '{session.profile}': "
+                + ", ".join(excluded_names) + "."
+            )
 
         self.logger.info(
             "Workflow start: profile=%s target=%s tools=%s",
@@ -299,7 +509,7 @@ class WorkflowEngine:
         if discovery_tools:
 
             with ThreadPoolExecutor(
-                max_workers=self.max_workers
+                max_workers=self._worker_limit(session.profile)
             ) as pool:
 
                 futures = {
@@ -311,18 +521,18 @@ class WorkflowEngine:
                     for tool in discovery_tools
                 }
 
-                for future in as_completed(futures):
-
-                    result = future.result()
-
+                def record_discovery(result):
                     session.results.append(result)
                     discovery_results.append(result)
-
                     self.logger.info(
                         "Discovery tool %s finished with %s findings",
                         result.tool,
                         len(result.findings),
                     )
+
+                self._collect_tool_futures(
+                    futures, session, "Discovery", record_discovery
+                )
 
         # Enrich passive subdomain results only when the scope validator approves them.
         subfinder_hosts = []
@@ -336,7 +546,7 @@ class WorkflowEngine:
 
         httpx_tool = self._find_tool(selected, "httpx")
         approved_hosts = []
-        if httpx_tool is not None:
+        if httpx_tool is not None and session.profile not in {"passive", "stealth"}:
             for host in dict.fromkeys(subfinder_hosts):
                 if len(approved_hosts) >= self.max_discovered_hosts:
                     session.notes.append(
@@ -352,20 +562,21 @@ class WorkflowEngine:
                     approved_hosts.append(approved)
 
         if approved_hosts:
-            with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+            with ThreadPoolExecutor(
+                max_workers=self._worker_limit(session.profile)
+            ) as pool:
                 futures = {
                     pool.submit(
                         self._run_scoped_tool_with_loading,
                         httpx_tool,
                         host,
                         session,
-                    ): host
+                    ): (httpx_tool, host)
                     for host in approved_hosts
                 }
-                for future in as_completed(futures):
-                    result = future.result()
+                def record_scoped_enrichment(result):
                     if result is None:
-                        continue
+                        return
                     session.results.append(result)
                     discovery_results.append(result)
                     self.logger.info(
@@ -373,6 +584,10 @@ class WorkflowEngine:
                         result.target,
                         result.status,
                     )
+
+                self._collect_tool_futures(
+                    futures, session, "Scoped enrichment", record_scoped_enrichment
+                )
 
         # ---------------------------------------------------------
         # Stage 2: Interpret discovery results
@@ -686,12 +901,26 @@ class WorkflowEngine:
         ]
 
         for group in multi_finding_groups:
+            verification_statuses = []
+            for finding in group.findings:
+                metadata = finding.metadata if isinstance(finding.metadata, dict) else {}
+                status = metadata.get("verification_status")
+                if status is not None:
+                    verification_statuses.append({
+                        "source_tool": finding.source_tool or "unknown",
+                        "status": str(status),
+                    })
+            distinct_statuses = {item["status"] for item in verification_statuses}
             details = {
                 "key": group.key,
                 "sources": group.sources,
                 "confidence": group.confidence,
                 "group_size": len(group.findings),
             }
+            if verification_statuses:
+                details["verification_statuses"] = verification_statuses
+                if len(distinct_statuses) > 1:
+                    details["verification_conflict"] = True
             for finding in group.findings:
                 if not isinstance(finding.metadata, dict):
                     finding.metadata = {}
@@ -712,3 +941,5 @@ class WorkflowEngine:
             "Finding correlation complete: %s raw findings, %s groups, %s multi-finding groups",
             len(findings), len(groups), len(multi_finding_groups),
         )
+        # Build a fresh, deterministic graph from the final session evidence.
+        session.asset_intelligence = AssetIntelligenceBuilder().build(session)

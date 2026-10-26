@@ -85,6 +85,24 @@ def test_settings_reject_invalid_worker_count(tmp_path):
         load_settings(path)
 
 
+@pytest.mark.parametrize("worker_count", [True, 1.5, "1.5", "invalid", "0", "-1"])
+def test_settings_reject_non_integer_worker_count_types(tmp_path, worker_count):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"max_workers": worker_count}), encoding="utf-8")
+    with pytest.raises(SettingsError, match="max_workers"):
+        load_settings(path)
+
+
+@pytest.mark.parametrize(("worker_count", "expected"), [(1, 1), (64, 64), ("4", 4), (" 2 ", 2), ("+3", 3)])
+def test_settings_accept_integer_and_legacy_numeric_string_worker_counts(
+    tmp_path, worker_count, expected
+):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"max_workers": worker_count}), encoding="utf-8")
+
+    assert load_settings(path)["max_workers"] == expected
+
+
 def test_cli_target_command_enforces_scope(capsys):
     from main import App
 
@@ -119,6 +137,23 @@ def test_settings_reject_unknown_profile(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(SettingsError, match="Unknown profile"):
+        load_settings(path)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"allowed_profiles": ["standard", None]},
+        {"authorized_targets": ["https://example.test/path"]},
+        {"authorized_targets": ["*.bad..example.test"]},
+        {"authorized_targets": ["10.0.0.0/99"]},
+    ],
+)
+def test_settings_reject_malformed_profile_and_scope_entries(tmp_path, settings):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(settings), encoding="utf-8")
+
+    with pytest.raises(SettingsError):
         load_settings(path)
 
 

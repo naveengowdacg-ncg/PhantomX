@@ -10,22 +10,56 @@ class Normalizer:
     def __init__(self):
         self.nikto_parser = NiktoParser()
 
+    @staticmethod
+    def _finding_signature(finding):
+        metadata = finding.metadata if isinstance(finding.metadata, dict) else {}
+        stable_metadata = {
+            key: value for key, value in metadata.items()
+            if key != "correlation"
+        }
+        value = {
+            "source_tool": finding.source_tool,
+            "category": finding.category,
+            "title": finding.title,
+            "target": finding.target,
+            "evidence": finding.evidence,
+            "recommendation": finding.recommendation,
+            "metadata": stable_metadata,
+        }
+        try:
+            return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            return repr(value)
+
     def parse(self, result):
-        findings = list(result.findings)
+        # Older saved results can have the completion flag but no generated-ID
+        # bookkeeping. Leave those intact rather than duplicating their findings.
+        if result.normalization_complete and result.normalization_generated_ids is None:
+            return result
+        generated_ids = set(result.normalization_generated_ids or [])
+        prior_generated = [
+            finding for finding in result.findings
+            if finding.finding_id in generated_ids
+        ]
+        findings = [
+            finding for finding in result.findings
+            if finding.finding_id not in generated_ids
+        ]
+        generated = []
 
         if result.tool == "nmap":
             for service in result.services:
                 if service.state != "open":
                     continue
 
-                findings.append(
+                generated.append(
                     Finding(
                         title=f"Open service: {service.service} on port {service.port}",
-                        category="network",
-                        impact=2,
-                        exploitability=2,
+                        category="observation",
+                        impact=0,
+                        exploitability=0,
                         confidence=0.95,
-                        exposure=7,
+                        exposure=0,
                         evidence=(
                             f"Nmap reported "
                             f"{service.port}/{service.protocol} as open "
@@ -38,6 +72,8 @@ class Normalizer:
                             "and restrict exposure where appropriate."
                         ),
                         metadata={
+                            "finding_type": "service_discovery",
+                            "verification_status": "service_discovery_observed",
                             "port": service.port,
                             "protocol": service.protocol,
                             "service": service.service,
@@ -47,7 +83,7 @@ class Normalizer:
                 )
 
         elif result.tool == "nikto":
-            findings.extend(
+            generated.extend(
                 self.nikto_parser.parse(
                     result.stdout or "",
                     result.target,
@@ -55,20 +91,20 @@ class Normalizer:
             )
 
         elif result.tool in {"subfinder", "dnsx", "httpx", "katana", "testssl", "gobuster"}:
-            findings.extend(self._parse_auxiliary(result))
+            generated.extend(self._parse_auxiliary(result))
 
         elif result.tool == "whatweb":
             text = (result.stdout or "") + "\n" + (result.stderr or "")
 
             if text.strip():
-                findings.append(
+                generated.append(
                     Finding(
                         title="Web technology fingerprint available",
-                        category="recon",
-                        impact=1,
-                        exploitability=1,
+                        category="observation",
+                        impact=0,
+                        exploitability=0,
                         confidence=0.9,
-                        exposure=5,
+                        exposure=0,
                         evidence=text[:1000].strip(),
                         source_tool=result.tool,
                         target=result.target,
@@ -76,12 +112,30 @@ class Normalizer:
                             "Review exposed technology versions and "
                             "minimize unnecessary disclosure."
                         ),
+                        metadata={
+                            "finding_type": "technology_fingerprint",
+                            "verification_status": "technology_observation",
+                        },
                     )
                 )
+        prior_by_signature = {
+            self._finding_signature(finding): finding
+            for finding in prior_generated
+        }
+        normalized = []
+        seen_signatures = set()
+        for finding in generated:
+            signature = self._finding_signature(finding)
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            normalized.append(prior_by_signature.get(signature, finding))
 
-
-
-        result.findings = findings
+        result.findings = findings + normalized
+        result.normalization_complete = True
+        result.normalization_generated_ids = [
+            finding.finding_id for finding in normalized
+        ]
         return result
 
     def _parse_auxiliary(self, result):
@@ -153,5 +207,39 @@ class Normalizer:
                 if re.fullmatch(r"[A-Za-z0-9._*-]+", line) and "." in line:
                     add("Subdomain discovered", line, {"hostname": line, "verification_status": "passive_discovery_unverified"})
             elif tool == "dnsx":
-                add("DNS record discovered", line, {"verification_status": "dns_observation"})
+                # Parse JSONL output from dnsx
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    item = None
+                if isinstance(item, dict):
+                    # JSONL format: {"host": "...", "a": ["..."], "cname": ["..."]}
+                    host = item.get("host") or item.get("name") or item.get("input")
+                    for rrtype in ("a", "aaaa", "cname", "ns", "mx", "txt"):
+                        values = item.get(rrtype)
+                        if isinstance(values, str):
+                            values = [values]
+                        if isinstance(values, list):
+                            for value in values:
+                                add(f"DNS {rrtype.upper()} record", line, {
+                                    "hostname": host,
+                                    "record_type": rrtype.upper(),
+                                    "value": value,
+                                    "verification_status": "dns_observation"
+                                })
+                    continue
+                # Fallback: parse plain text format
+                match = re.match(r"^(?P<host>[A-Za-z0-9._-]+)\s+(?:\[(?P<rr>A|AAAA|CNAME|NS|MX|TXT)\]|(?P<plain>A|AAAA|CNAME|NS|MX|TXT))\s+(?P<value>\S+)", line, re.I)
+                if match:
+                    host = match.group("host")
+                    rrtype = (match.group("rr") or match.group("plain")).upper()
+                    value = match.group("value")
+                    add(f"DNS {rrtype} record", line, {
+                        "hostname": host,
+                        "record_type": rrtype,
+                        "value": value,
+                        "verification_status": "dns_observation"
+                    })
+                else:
+                    add("DNS record discovered", line, {"verification_status": "dns_observation"})
         return findings

@@ -14,6 +14,11 @@ class CapturingWorkflow:
         self.scope = scope
 
 
+class CapturingExecutor:
+    def __init__(self, logger, scope=None):
+        self.scope = scope
+
+
 def test_app_passes_configured_scope_validator_into_workflow(tmp_path, monkeypatch):
     settings = tmp_path / "settings.json"
     settings.write_text(json.dumps({
@@ -25,7 +30,7 @@ def test_app_passes_configured_scope_validator_into_workflow(tmp_path, monkeypat
     monkeypatch.setattr(main_module, "WorkflowEngine", CapturingWorkflow)
     monkeypatch.setattr(main_module, "ToolRegistry", lambda: object())
     monkeypatch.setattr(main_module, "get_logger", lambda reports_dir: DummyLogger())
-    monkeypatch.setattr(main_module, "ToolExecutor", lambda logger: object())
+    monkeypatch.setattr(main_module, "ToolExecutor", CapturingExecutor)
     monkeypatch.setattr(main_module, "AdapterManager", lambda: object())
     monkeypatch.setattr(main_module, "Normalizer", lambda: object())
     monkeypatch.setattr(main_module, "RiskEngine", lambda: object())
@@ -36,4 +41,5 @@ def test_app_passes_configured_scope_validator_into_workflow(tmp_path, monkeypat
 
     assert isinstance(app.scope, TargetScope)
     assert app.scope.authorized_targets == ["lab.test"]
+    assert app.executor.scope is app.scope
     assert app.workflow.scope is app.scope

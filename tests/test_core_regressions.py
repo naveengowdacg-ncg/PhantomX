@@ -8,6 +8,8 @@
 from analysis.correlation import CorrelationEngine
 from modules.nmap.parser import NmapParser
 from modules.whatweb.parser import WhatWebParser
+from analysis.normalizer import Normalizer
+from analysis.scoring import RiskEngine
 
 
 def test_nested_model_serialization():
@@ -143,7 +145,7 @@ def test_correlation_groups_same_service():
 
     assert len(http_group.findings) == 2
     assert http_group.sources == ["nmap", "whatweb"]
-    assert http_group.confidence == 0.85
+    assert http_group.confidence == 0.70
 
 
 def test_correlation_separates_targets():
@@ -164,3 +166,44 @@ def test_correlation_separates_targets():
     assert {group.target for group in groups} == {
         "127.0.0.1", "127.0.0.2"
     }
+
+
+def test_service_discovery_and_technology_fingerprints_are_zero_risk_observations():
+    normalizer = Normalizer()
+    risk = RiskEngine()
+    nmap = ToolResult(
+        tool="nmap", category="recon", target="127.0.0.1",
+        started_at="", finished_at="", return_code=0,
+        services=[Service(80, "tcp", "open", "http", "Apache")],
+    )
+    whatweb = ToolResult(
+        tool="whatweb", category="web", target="http://127.0.0.1",
+        started_at="", finished_at="", return_code=0,
+        stdout="http://127.0.0.1 [200 OK] Apache[2.4]",
+    )
+
+    for result in (nmap, whatweb):
+        normalizer.parse(result)
+        risk.score_all(result.findings)
+        assert result.findings[0].category == "observation"
+        assert result.findings[0].score == 0
+        assert result.findings[0].severity == "info"
+    assert nmap.findings[0].metadata["finding_type"] == "service_discovery"
+    assert whatweb.findings[0].metadata["finding_type"] == "technology_fingerprint"
+
+
+def test_nuclei_matches_require_verification():
+    import json
+
+    from modules.nuclei.parser import NucleiParser
+
+    event = {
+        "template-id": "example-cve-check",
+        "matched-at": "http://127.0.0.1/example",
+        "info": {"name": "Example CVE match", "severity": "high", "tags": ["cve"]},
+    }
+    findings = NucleiParser().parse(json.dumps(event), "127.0.0.1")
+
+    assert len(findings) == 1
+    assert findings[0].category == "vulnerability"
+    assert findings[0].metadata["verification_status"] == "scanner_match_unverified"

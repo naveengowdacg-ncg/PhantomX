@@ -65,6 +65,7 @@ class Finding:
     metadata: Dict[str, Any] = field(default_factory=dict)
     finding_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     score: float = 0.0
+    score_breakdown: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
         return self.__dict__.copy()
@@ -103,6 +104,9 @@ class ToolResult:
     endpoints: List[Endpoint] = field(default_factory=list)
     observations: List[Observation] = field(default_factory=list)
     findings: List[Finding] = field(default_factory=list)
+    normalization_complete: bool = False
+    # Persist provenance so repeated normalization can refresh only derived findings.
+    normalization_generated_ids: Optional[List[str]] = None
 
     def as_dict(self) -> Dict[str, Any]:
         data = self.__dict__.copy()
@@ -125,6 +129,8 @@ class Session:
     session_id: str = field(
         default_factory=lambda: datetime.now().strftime("%Y%m%d_%H%M%S")
     )
+    # Derived, serializable attack-surface graph; older sessions default to empty.
+    asset_intelligence: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -134,4 +140,5 @@ class Session:
             "started_at": self.started_at,
             "results": [r.as_dict() for r in self.results],
             "notes": self.notes,
+            "asset_intelligence": self.asset_intelligence,
         }

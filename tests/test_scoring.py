@@ -60,13 +60,17 @@ def test_observation_always_has_zero_risk():
 
 
 @pytest.mark.parametrize(
-    ("value", "expected_score"),
+    ("value",),
     [
-        (20, 100.0),
-        (-10, 0.0),
+        (20,),
+        (-10,),
+        (float("nan"),),
+        (float("inf"),),
+        (None,),
+        (True,),
     ],
 )
-def test_score_is_clamped_to_valid_range(value, expected_score):
+def test_score_rejects_invalid_or_out_of_range_input(value):
     finding = Finding(
         title="Score clamping test",
         category="vuln",
@@ -76,9 +80,45 @@ def test_score_is_clamped_to_valid_range(value, expected_score):
         exposure=value,
     )
 
-    result = RiskEngine().score(finding)
+    with pytest.raises(ValueError, match="finite number from 0 to 10"):
+        RiskEngine().score(finding)
 
-    assert result.score == expected_score
+
+@pytest.mark.parametrize(
+    ("confidence", "normalized", "interpretation"),
+    [
+        (0.5, 5.0, "fraction converted to 0-10"),
+        (1.0, 10.0, "fraction converted to 0-10"),
+        (5.0, 5.0, "already on 0-10 scale"),
+    ],
+)
+def test_confidence_scale_and_explainable_breakdown(confidence, normalized, interpretation):
+    finding = Finding(
+        title="Confidence scale",
+        category="vuln",
+        impact=4,
+        exploitability=6,
+        confidence=confidence,
+        exposure=2,
+    )
+
+    scored = RiskEngine().score(finding)
+
+    assert scored.score_breakdown["normalized_inputs"]["confidence"] == normalized
+    assert scored.score_breakdown["confidence_interpretation"] == interpretation
+    assert scored.score_breakdown["score"] == scored.score
+    assert scored.score == round(sum(scored.score_breakdown["contributions"].values()), 1)
+
+
+def test_score_all_validates_entire_batch_before_mutating_findings():
+    valid = Finding("valid", "vuln", impact=10, exploitability=10, confidence=1, exposure=10)
+    invalid = Finding("invalid", "vuln", impact=float("nan"))
+
+    with pytest.raises(ValueError):
+        RiskEngine().score_all([valid, invalid])
+
+    assert valid.score == 0.0
+    assert valid.score_breakdown == {}
 
 
 def test_score_all_scores_each_finding():
