@@ -122,14 +122,21 @@ class Normalizer:
             self._finding_signature(finding): finding
             for finding in prior_generated
         }
+        # Avoid adding findings already present in the result.
         normalized = []
-        seen_signatures = set()
+        seen_signatures = {
+            self._finding_signature(finding)
+            for finding in findings
+        }
+
         for finding in generated:
             signature = self._finding_signature(finding)
             if signature in seen_signatures:
                 continue
             seen_signatures.add(signature)
-            normalized.append(prior_by_signature.get(signature, finding))
+            normalized.append(
+                prior_by_signature.get(signature, finding)
+            )
 
         result.findings = findings + normalized
         result.normalization_complete = True
