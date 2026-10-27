@@ -234,7 +234,7 @@ install_system_prerequisites() {
         dnsx
         httpx-toolkit       # Kali package name is httpx-toolkit
         katana
-        testssl             # Kali package name is testssl (not testssl.sh)
+        testssl.sh          # Kali package name is testssl.sh
     )
 
     APT_PACKAGES_TO_INSTALL=("${core_packages[@]}" "${scanner_packages[@]}")
