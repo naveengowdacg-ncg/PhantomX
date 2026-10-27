@@ -1,20 +1,38 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 import sys
 import threading
 import time
 from urllib.parse import urlsplit
 
-from core.models import Endpoint
+from core.models import Endpoint, ToolResult
+from core.scope import TargetScopeError, normalize_http_url, normalize_target
 from analysis.decision_engine import DecisionEngine
 from analysis.correlation import CorrelationEngine
+from analysis.asset_intelligence import AssetIntelligenceBuilder
 
 class WorkflowEngine:
     """Adaptive, profile-driven assessment workflow."""
 
+    # Recon category alone must never make a scanner passive or low-impact.
+    RESTRICTED_PROFILE_TOOLS = {
+        "passive": {"subfinder"},
+        "stealth": {"subfinder", "httpx"},
+    }
+    PROFILE_SEMANTICS = {
+        "passive": "Passive discovery only; no direct target probes or downstream assessments.",
+        "stealth": "Single-target, low-volume HTTP metadata plus passive discovery; no downstream assessments. This is not invisible scanning.",
+        "standard": "Reconnaissance and web assessment; vulnerability-category tools are excluded.",
+        "full": "All enabled reconnaissance, web, and vulnerability-category tools.",
+        "aggressive": "Full tool selection with the bounded aggressive Nmap arguments configured for this profile; no exploitation framework.",
+    }
+
     PROFILES = {
         "passive": ["recon"],
+        "stealth": ["recon"],
         "standard": ["recon", "web"],
         "full": ["recon", "web", "vuln"],
+        "aggressive": ["recon", "web", "vuln"],
     }
 
     WEB_PORTS = {
@@ -46,6 +64,11 @@ class WorkflowEngine:
         self.max_workers = max_workers
         self.scope = scope
         self.max_discovered_hosts = 25
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        """Request cancellation of in-flight external tools."""
+        self._cancel_event.set()
 
     def _show_loading(self, message, stop_event):
         """Display a simple loading spinner while a tool is running."""
@@ -89,32 +112,258 @@ class WorkflowEngine:
             stop_event.set()
             loading_thread.join()
 
+    def _worker_failure_result(self, tool, target, stage, error):
+        """Represent an unexpected worker exception without losing its context."""
+        tool = tool if isinstance(tool, dict) else {}
+        name = tool.get("name")
+        category = tool.get("category")
+        executable = tool.get("executable")
+        name = name if isinstance(name, str) and name else "unknown"
+        category = category if isinstance(category, str) and category else "unknown"
+        command = [executable] if isinstance(executable, str) and executable else []
+        now = datetime.now(timezone.utc).isoformat()
+        detail = f"{stage} worker failed ({type(error).__name__}): {error}"
+        return ToolResult(
+            tool=name,
+            category=category,
+            target=target,
+            started_at=now,
+            finished_at=now,
+            return_code=None,
+            status="error",
+            command=command,
+            stderr=detail,
+        )
+
     def tools_for_profile(self, profile):
         if profile not in self.PROFILES:
             raise ValueError(f"Unknown scan profile: {profile}")
         categories = self.PROFILES[profile]
+        selected = []
+        for configured_tool in self.registry.list():
+            if not isinstance(configured_tool, dict):
+                continue
+            name = configured_tool.get("name")
+            category = configured_tool.get("category")
+            enabled = configured_tool.get("enabled", True)
+            if (
+                not isinstance(name, str)
+                or not isinstance(category, str)
+                or not isinstance(enabled, bool)
+                or not enabled
+            ):
+                continue
 
-        return [
-            tool
-            for tool in self.registry.list()
-            if tool.get("enabled", True)
-            and tool.get("category") in categories
-        ]
+            modes = configured_tool.get("profile_modes")
+            if modes is not None and (
+                not isinstance(modes, list)
+                or any(
+                    not isinstance(item, str) or item not in self.PROFILES
+                    for item in modes
+                )
+            ):
+                # Malformed profile restrictions must never widen selection.
+                continue
+            if profile in self.RESTRICTED_PROFILE_TOOLS:
+                if isinstance(modes, list):
+                    eligible = profile in modes
+                else:
+                    eligible = name.casefold() in self.RESTRICTED_PROFILE_TOOLS[profile]
+                if not eligible or category != "recon":
+                    continue
+            elif category not in categories:
+                continue
+            elif isinstance(modes, list) and profile not in modes:
+                continue
+
+            tool = dict(configured_tool)
+            profile_args = tool.get("profile_args")
+            if isinstance(profile_args, dict) and profile in profile_args:
+                selected_args = profile_args[profile]
+                if not isinstance(selected_args, list) or any(
+                    not isinstance(arg, str) for arg in selected_args
+                ):
+                    raise ValueError(
+                        f"Invalid {profile} profile_args for tool {name}."
+                    )
+                tool["args"] = list(selected_args)
+            profile_timeout = tool.get("profile_timeout")
+            if isinstance(profile_timeout, dict) and profile in profile_timeout:
+                tool["timeout"] = profile_timeout[profile]
+            profile_retries = tool.get("profile_retries")
+            if isinstance(profile_retries, dict) and profile in profile_retries:
+                tool["retries"] = profile_retries[profile]
+            profile_retry_on_timeout = tool.get("profile_retry_on_timeout")
+            if isinstance(profile_retry_on_timeout, dict) and profile in profile_retry_on_timeout:
+                tool["retry_on_timeout"] = profile_retry_on_timeout[profile]
+            selected.append(tool)
+        return selected
+
+    def _worker_limit(self, profile):
+        """Apply explicit concurrency caps to low-footprint and aggressive modes."""
+        if profile == "stealth":
+            return 1
+        if profile == "aggressive":
+            return min(self.max_workers, 4)
+        return self.max_workers
 
     def _run_tool(self, tool, target, extra_args=None):
-        """Execute, normalize, and score one tool result."""
+        """Execute, normalize, and score one tool result without aborting peers."""
+        try:
+            result = self.adapter_manager.run(
+                tool,
+                target,
+                self.executor,
+                extra_args=extra_args,
+            )
+        except Exception as exc:
+            log_exception = getattr(self.logger, "exception", None)
+            if callable(log_exception):
+                log_exception("Tool %s failed in workflow: %s", tool.get("name", "unknown"), exc)
+            now = datetime.now(timezone.utc).isoformat()
+            return ToolResult(
+                tool=tool.get("name", "unknown"),
+                category=tool.get("category", "unknown"),
+                target=target,
+                started_at=now,
+                finished_at=now,
+                return_code=None,
+                status="error",
+                command=[tool.get("executable", "")],
+                stderr=f"Workflow tool error: {exc}",
+            )
 
-        result = self.adapter_manager.run(
-            tool,
-            target,
-            self.executor,
-            extra_args=extra_args,
-        )
+        try:
+            result = self.normalizer.parse(result)
+        except Exception as exc:
+            result.status = "parse_error"
+            result.stderr = "\n".join(
+                item for item in (result.stderr, f"Normalization failed: {exc}") if item
+            )
+            log_exception = getattr(self.logger, "exception", None)
+            if callable(log_exception):
+                log_exception("Tool %s output normalization failed: %s", result.tool, exc)
+            return result
 
-        result = self.normalizer.parse(result)
-        result.findings = self.risk_engine.score_all(result.findings)
-
+        try:
+            result.findings = self.risk_engine.score_all(result.findings)
+        except Exception as exc:
+            result.status = "scoring_error"
+            result.stderr = "\n".join(
+                item for item in (result.stderr, f"Finding scoring failed: {exc}") if item
+            )
+            log_exception = getattr(self.logger, "exception", None)
+            if callable(log_exception):
+                log_exception("Tool %s finding scoring failed: %s", result.tool, exc)
         return result
+
+    def _validated_active_target(self, target, session_target):
+        """Authorize a host, host:port, or HTTP(S) endpoint before a probe."""
+        if not isinstance(target, str) or not target.strip():
+            raise TargetScopeError("Active probe target must be a non-empty string.")
+        raw = target.strip()
+        endpoint = normalize_http_url(raw) if "://" in raw else None
+        port = None
+
+        if endpoint:
+            host = endpoint["host"]
+        else:
+            authority = None
+            if raw.startswith("[") or (
+                raw.count(":") == 1 and raw.rsplit(":", 1)[1].isdigit()
+            ):
+                try:
+                    authority = urlsplit("//" + raw)
+                    port = authority.port
+                except ValueError as exc:
+                    raise TargetScopeError(f"Active probe target is invalid: {exc}") from exc
+            if authority is not None and authority.hostname and port is not None:
+                host = normalize_target(authority.hostname)
+                if port < 1 or port > 65535:
+                    raise TargetScopeError("Endpoint port must be between 1 and 65535.")
+            else:
+                host = normalize_target(raw)
+
+        if self.scope is not None:
+            approved_host = self.scope.validate(host)
+        else:
+            # Without an injected validator, permit only the already validated
+            # session host. A discovery result cannot authorize a new host.
+            approved_host = normalize_target(session_target)
+            if host != approved_host:
+                raise TargetScopeError(
+                    "No scope validator is configured; discovered hosts must match the session target."
+                )
+
+        if endpoint:
+            default_port = 443 if endpoint["scheme"] == "https" else 80
+            authority_host = f"[{approved_host}]" if ":" in approved_host else approved_host
+            authority = (
+                authority_host
+                if endpoint["port"] == default_port
+                else f"{authority_host}:{endpoint['port']}"
+            )
+            return f"{endpoint['scheme']}://{authority}"
+        if port is not None:
+            authority_host = f"[{approved_host}]" if ":" in approved_host else approved_host
+            return f"{authority_host}:{port}"
+        return approved_host
+
+    def _record_scope_denial(self, session, tool, target, error):
+        note = f"Scope denied: skipped {tool} probe for '{target}': {error}"
+        if note not in session.notes:
+            session.notes.append(note)
+        log = getattr(self.logger, "warning", None) or getattr(self.logger, "info", None)
+        if callable(log):
+            log("%s", note)
+
+    def _run_scoped_tool_with_loading(self, tool, target, session, extra_args=None):
+        """Revalidate a probe target immediately before starting its tool."""
+        try:
+            approved_target = self._validated_active_target(target, session.target)
+        except Exception as exc:
+            self._record_scope_denial(session, tool.get("name", "unknown"), target, exc)
+            return None
+        return self._run_tool_with_loading(tool, approved_target, extra_args=extra_args)
+
+    def _collect_tool_futures(self, futures, session, stage, on_result):
+        """Collect peer results independently and stop child processes on Ctrl+C."""
+        seen = set()
+
+        def collect(future):
+            seen.add(future)
+            context = futures[future]
+            if isinstance(context, tuple) and len(context) == 2:
+                tool, target = context
+            else:
+                tool, target = context, session.target
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = self._worker_failure_result(
+                    tool, target, stage, exc
+                )
+                note = f"{result.stderr} for {result.tool} against {result.target}."
+                if note not in session.notes:
+                    session.notes.append(note)
+                log_exception = getattr(self.logger, "exception", None)
+                if callable(log_exception):
+                    log_exception("%s worker for %s failed: %s", stage, result.tool, exc)
+            on_result(result)
+
+        try:
+            for future in as_completed(futures):
+                collect(future)
+        except KeyboardInterrupt:
+            self.cancel()
+            note = "Workflow interrupted; active scanner processes are being stopped."
+            if note not in session.notes:
+                session.notes.append(note)
+            # Keep queued tasks as audit rows; the shared event prevents them
+            # from launching a scanner after cancellation.
+            for future in as_completed(futures):
+                if future not in seen:
+                    collect(future)
 
     def _find_tool(self, tools, name):
         """Return an enabled tool by name."""
@@ -167,6 +416,29 @@ class WorkflowEngine:
         return endpoints
 
     def run(self, session):
+        """Run one workflow and release its cancellation signal when finished."""
+        self._cancel_event.clear()
+        set_cancel_event = getattr(self.executor, "set_cancel_event", None)
+        if callable(set_cancel_event):
+            set_cancel_event(self._cancel_event)
+        try:
+            return self._run(session)
+        finally:
+            if callable(set_cancel_event):
+                set_cancel_event(None)
+            for result in session.results:
+                if result.status in {
+                    "missing", "misconfigured", "scope_denied", "timeout",
+                    "cancelled", "output_limited", "parse_error", "scoring_error", "error",
+                }:
+                    note = (
+                        f"Tool {result.tool} finished with status {result.status}: "
+                        f"{(result.stderr or 'no diagnostic provided')[:500]}"
+                    )
+                    if note not in session.notes:
+                        session.notes.append(note)
+
+    def _run(self, session):
         """
         Execute an adaptive workflow.
 
@@ -176,12 +448,51 @@ class WorkflowEngine:
 
         selected = self.tools_for_profile(session.profile)
 
+        semantics = self.PROFILE_SEMANTICS.get(session.profile)
+        if semantics:
+            note = f"Profile semantics: {semantics}"
+            if note not in session.notes:
+                session.notes.append(note)
+        selected_names = {tool["name"] for tool in selected}
+        configured = [
+            tool for tool in self.registry.list()
+            if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+        ]
+        disabled_names = list(dict.fromkeys(
+            tool["name"] for tool in configured
+            if tool.get("enabled", True) is False
+        ))
+        excluded_names = list(dict.fromkeys(
+            tool["name"] for tool in configured
+            if tool.get("enabled", True) is True
+            and tool["name"] not in selected_names
+        ))
+        if disabled_names:
+            session.notes.append(
+                "Disabled tools not run: " + ", ".join(disabled_names) + "."
+            )
+        if excluded_names:
+            session.notes.append(
+                f"Tools not selected by profile '{session.profile}': "
+                + ", ".join(excluded_names) + "."
+            )
+
         self.logger.info(
             "Workflow start: profile=%s target=%s tools=%s",
             session.profile,
             session.target,
             [tool["name"] for tool in selected],
         )
+
+        try:
+            if self.scope is not None:
+                session.target = self.scope.validate(session.target)
+            else:
+                session.target = normalize_target(session.target)
+        except Exception as exc:
+            self._record_scope_denial(session, "workflow", session.target, exc)
+            self._correlate_session_findings(session)
+            return session
 
         # ---------------------------------------------------------
         # Stage 1: Discovery
@@ -198,7 +509,7 @@ class WorkflowEngine:
         if discovery_tools:
 
             with ThreadPoolExecutor(
-                max_workers=self.max_workers
+                max_workers=self._worker_limit(session.profile)
             ) as pool:
 
                 futures = {
@@ -210,25 +521,23 @@ class WorkflowEngine:
                     for tool in discovery_tools
                 }
 
-                for future in as_completed(futures):
-
-                    result = future.result()
-
+                def record_discovery(result):
                     session.results.append(result)
                     discovery_results.append(result)
-
                     self.logger.info(
                         "Discovery tool %s finished with %s findings",
                         result.tool,
                         len(result.findings),
                     )
 
-        # Safely enrich passive subdomain discoveries with HTTP metadata.
-        # Newly discovered hosts are actively probed only when the configured
-        # scope explicitly authorizes them (including wildcard/CIDR rules).
+                self._collect_tool_futures(
+                    futures, session, "Discovery", record_discovery
+                )
+
+        # Enrich passive subdomain results only when the scope validator approves them.
         subfinder_hosts = []
         for result in discovery_results:
-            if result.tool != "subfinder":
+            if result.tool != "subfinder" or result.status != "success":
                 continue
             for finding in result.findings:
                 hostname = (finding.metadata or {}).get("hostname")
@@ -237,7 +546,7 @@ class WorkflowEngine:
 
         httpx_tool = self._find_tool(selected, "httpx")
         approved_hosts = []
-        if self.scope is not None and httpx_tool is not None:
+        if httpx_tool is not None and session.profile not in {"passive", "stealth"}:
             for host in dict.fromkeys(subfinder_hosts):
                 if len(approved_hosts) >= self.max_discovered_hosts:
                     session.notes.append(
@@ -245,24 +554,29 @@ class WorkflowEngine:
                     )
                     break
                 try:
-                    approved = self.scope.validate(host)
-                except Exception:
+                    approved = self._validated_active_target(host, session.target)
+                except Exception as exc:
+                    self._record_scope_denial(session, "httpx", host, exc)
                     continue
                 if approved != session.target and approved not in approved_hosts:
                     approved_hosts.append(approved)
 
         if approved_hosts:
-            with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+            with ThreadPoolExecutor(
+                max_workers=self._worker_limit(session.profile)
+            ) as pool:
                 futures = {
                     pool.submit(
-                        self._run_tool_with_loading,
+                        self._run_scoped_tool_with_loading,
                         httpx_tool,
                         host,
-                    ): host
+                        session,
+                    ): (httpx_tool, host)
                     for host in approved_hosts
                 }
-                for future in as_completed(futures):
-                    result = future.result()
+                def record_scoped_enrichment(result):
+                    if result is None:
+                        return
                     session.results.append(result)
                     discovery_results.append(result)
                     self.logger.info(
@@ -270,6 +584,10 @@ class WorkflowEngine:
                         result.target,
                         result.status,
                     )
+
+                self._collect_tool_futures(
+                    futures, session, "Scoped enrichment", record_scoped_enrichment
+                )
 
         # ---------------------------------------------------------
         # Stage 2: Interpret discovery results
@@ -290,28 +608,35 @@ class WorkflowEngine:
             )
 
             if decision["type"] == "web_assessment":
+                try:
+                    normalized_url = self._validated_active_target(
+                        decision["target"], session.target
+                    )
+                    endpoint_parts = normalize_http_url(normalized_url)
+                except Exception as exc:
+                    self._record_scope_denial(
+                        session,
+                        decision.get("source_tool", "discovery"),
+                        decision["target"],
+                        exc,
+                    )
+                    continue
 
                 endpoint = Endpoint(
-                    url=decision["target"],
-                    scheme=(
-                        "https"
-                        if decision["target"].startswith("https://")
-                        else "http"
-                    ),
-                    host=decision["host"],
-                    port=decision["port"],
-                    source_tool="nmap",
+                    url=endpoint_parts["url"],
+                    scheme=endpoint_parts["scheme"],
+                    host=endpoint_parts["host"],
+                    port=endpoint_parts["port"],
+                    source_tool=decision.get("source_tool", "nmap"),
                     metadata={
-                        "service": decision["service"],
-                        "version": decision["version"],
+                        "service": decision.get("service", ""),
+                        "version": decision.get("version", ""),
                         "decision": decision["type"],
+                        **decision.get("endpoint_metadata", {}),
                     },
                 )
 
-                if endpoint.url not in {
-                    existing.url
-                    for existing in web_endpoints
-                }:
+                if endpoint.url not in {existing.url for existing in web_endpoints}:
                     web_endpoints.append(endpoint)
 
             elif decision["type"] == "database_assessment":
@@ -321,43 +646,6 @@ class WorkflowEngine:
                     f"{decision['port']}/{decision['protocol']} "
                     f"({decision['service']})."
                 )
-
-        # Promote reachable httpx URLs to endpoints only after checking that
-        # their host is inside the configured authorization scope.
-        existing_endpoint_urls = {endpoint.url for endpoint in web_endpoints}
-        for result in discovery_results:
-            if result.tool != "httpx" or result.status != "success":
-                continue
-            for finding in result.findings:
-                url = (finding.metadata or {}).get("url")
-                if not url:
-                    continue
-                try:
-                    parsed = urlsplit(url)
-                    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-                        continue
-                    if self.scope is not None:
-                        self.scope.validate(parsed.hostname)
-                    elif parsed.hostname != session.target:
-                        # Fail closed for discovered hosts if no scope validator
-                        # was provided to the workflow engine.
-                        continue
-                    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-                    normalized_url = f"{parsed.scheme}://{parsed.netloc or parsed.hostname}"
-                    if normalized_url in existing_endpoint_urls:
-                        continue
-                    endpoint = Endpoint(
-                        url=normalized_url,
-                        scheme=parsed.scheme,
-                        host=parsed.hostname,
-                        port=port,
-                        source_tool="httpx",
-                        metadata={"discovered_path": parsed.path or "/", "status_code": (finding.metadata or {}).get("status_code")},
-                    )
-                    web_endpoints.append(endpoint)
-                    existing_endpoint_urls.add(normalized_url)
-                except Exception:
-                    continue
 
         # ---------------------------------------------------------
         # Stage 3: Prepare adaptive web assessment
@@ -414,10 +702,13 @@ class WorkflowEngine:
                         endpoint.url,
                     )
 
-                    result = self._run_tool_with_loading(
+                    result = self._run_scoped_tool_with_loading(
                         tool,
                         endpoint.url,
+                        session,
                     )
+                    if result is None:
+                        continue
                     result.endpoints.append(endpoint)
 
                     for observation in result.observations:
@@ -436,8 +727,8 @@ class WorkflowEngine:
         elif web_endpoints:
 
             session.notes.append(
-                "Web endpoints discovered, but no recommended "
-                "web assessment tools are enabled."
+                "Web endpoints discovered, but no recommended web assessment "
+                "tools are enabled or included in this profile."
             )
 
 
@@ -481,11 +772,14 @@ class WorkflowEngine:
                     target,
                 )
 
-                result = self._run_tool_with_loading(
+                result = self._run_scoped_tool_with_loading(
                     tool,
                     target,
+                    session,
                     extra_args=["--tags", "mysql"],
                 )
+                if result is None:
+                    continue
 
                 session.results.append(result)
 
@@ -549,10 +843,13 @@ class WorkflowEngine:
                     f"against {target}"
                 )
 
-                result = self._run_tool_with_loading(
+                result = self._run_scoped_tool_with_loading(
                     tool,
-                    target
+                    target,
+                    session,
                 )
+                if result is None:
+                    continue
 
                 # Attach the endpoint that triggered this decision
                 endpoint = next(
@@ -604,12 +901,26 @@ class WorkflowEngine:
         ]
 
         for group in multi_finding_groups:
+            verification_statuses = []
+            for finding in group.findings:
+                metadata = finding.metadata if isinstance(finding.metadata, dict) else {}
+                status = metadata.get("verification_status")
+                if status is not None:
+                    verification_statuses.append({
+                        "source_tool": finding.source_tool or "unknown",
+                        "status": str(status),
+                    })
+            distinct_statuses = {item["status"] for item in verification_statuses}
             details = {
                 "key": group.key,
                 "sources": group.sources,
                 "confidence": group.confidence,
                 "group_size": len(group.findings),
             }
+            if verification_statuses:
+                details["verification_statuses"] = verification_statuses
+                if len(distinct_statuses) > 1:
+                    details["verification_conflict"] = True
             for finding in group.findings:
                 if not isinstance(finding.metadata, dict):
                     finding.metadata = {}
@@ -630,3 +941,5 @@ class WorkflowEngine:
             "Finding correlation complete: %s raw findings, %s groups, %s multi-finding groups",
             len(findings), len(groups), len(multi_finding_groups),
         )
+        # Build a fresh, deterministic graph from the final session evidence.
+        session.asset_intelligence = AssetIntelligenceBuilder().build(session)

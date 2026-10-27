@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from core.scope import TargetScope, TargetScopeError, normalize_target
+from core.scope import TargetScope, TargetScopeError, normalize_http_url, normalize_target
 from core.settings import SettingsError, load_settings
 
 
@@ -85,6 +85,24 @@ def test_settings_reject_invalid_worker_count(tmp_path):
         load_settings(path)
 
 
+@pytest.mark.parametrize("worker_count", [True, 1.5, "1.5", "invalid", "0", "-1"])
+def test_settings_reject_non_integer_worker_count_types(tmp_path, worker_count):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"max_workers": worker_count}), encoding="utf-8")
+    with pytest.raises(SettingsError, match="max_workers"):
+        load_settings(path)
+
+
+@pytest.mark.parametrize(("worker_count", "expected"), [(1, 1), (64, 64), ("4", 4), (" 2 ", 2), ("+3", 3)])
+def test_settings_accept_integer_and_legacy_numeric_string_worker_counts(
+    tmp_path, worker_count, expected
+):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"max_workers": worker_count}), encoding="utf-8")
+
+    assert load_settings(path)["max_workers"] == expected
+
+
 def test_cli_target_command_enforces_scope(capsys):
     from main import App
 
@@ -115,7 +133,7 @@ def test_scan_revalidates_target_before_execution(capsys):
 def test_settings_reject_unknown_profile(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text(
-        json.dumps({"allowed_profiles": ["aggressive"]}),
+        json.dumps({"allowed_profiles": ["experimental"]}),
         encoding="utf-8",
     )
     with pytest.raises(SettingsError, match="Unknown profile"):
@@ -277,7 +295,7 @@ def test_unauthorized_hostname_rejected():
 def test_settings_reject_invalid_authorized_target_entries(tmp_path, invalid_entry):
     path = tmp_path / "settings.json"
     path.write_text(json.dumps({"authorized_targets": [invalid_entry]}), encoding="utf-8")
-    with pytest.raises(SettingsError, match="Invalid authorized_targets"):
+    with pytest.raises(SettingsError):
         load_settings(path)
 
 
@@ -285,7 +303,7 @@ def test_settings_reject_mixed_valid_invalid_authorized_targets(tmp_path):
     path = tmp_path / "settings.json"
     # "invalid-host!" contains invalid character for hostname
     path.write_text(json.dumps({"authorized_targets": ["192.168.1.0/24", "invalid-host!"]}), encoding="utf-8")
-    with pytest.raises(SettingsError, match="Invalid authorized_targets"):
+    with pytest.raises(SettingsError, match="Invalid"):
         load_settings(path)
 
 
@@ -306,7 +324,19 @@ def test_settings_accept_valid_authorized_target_formats(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text(json.dumps({"authorized_targets": authorized}), encoding="utf-8")
     settings = load_settings(path)
-    assert settings["authorized_targets"] == authorized
+    # Settings normalizes targets, so compare normalized forms
+    assert settings["authorized_targets"] == [
+        "192.168.1.1",
+        "::1",
+        "2001:db8::1",
+        "192.168.1.0/24",
+        "2001:db8::/32",
+        "example.com",
+        "sub.example.com",
+        "*.example.com",
+        "localhost",
+        "myserver",
+    ]
 
 
 def test_empty_scope_fails_closed():
@@ -368,3 +398,59 @@ def test_case_insensitive_hostname_matching():
     assert scope.validate("EXAMPLE.COM") == "example.com"
     assert scope.validate("Test.Internal.Net") == "test.internal.net"
     assert scope.validate("API.TEST.INTERNAL.NET") == "api.test.internal.net"
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"allowed_profiles": ["standard", None]},
+        {"authorized_targets": ["https://example.test/path"]},
+        {"authorized_targets": ["*.bad..example.test"]},
+        {"authorized_targets": ["10.0.0.0/99"]},
+    ],
+)
+def test_settings_reject_malformed_profile_and_scope_entries(tmp_path, settings):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(settings), encoding="utf-8")
+
+    with pytest.raises(SettingsError):
+        load_settings(path)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_url", "expected_host", "expected_port"),
+    [
+        ("http://EXAMPLE.test:80/login", "http://example.test", "example.test", 80),
+        ("https://localhost:8443/a", "https://localhost:8443", "localhost", 8443),
+        ("http://[::1]:8080/health", "http://[::1]:8080", "::1", 8080),
+    ],
+)
+def test_http_endpoint_normalization_handles_hosts_ports_and_urls(
+    raw, expected_url, expected_host, expected_port
+):
+    endpoint = normalize_http_url(raw)
+    assert endpoint["url"] == expected_url
+    assert endpoint["host"] == expected_host
+    assert endpoint["port"] == expected_port
+
+
+def test_scope_validate_url_checks_host_and_accepts_localhost_and_ports():
+    scope = TargetScope(True, ["localhost", "::1"])
+    assert scope.validate_url("http://localhost:8080/admin") == "http://localhost:8080"
+    assert scope.validate_url("http://[::1]:80/") == "http://[::1]"
+    with pytest.raises(TargetScopeError, match="outside configured scope"):
+        scope.validate_url("https://outside.test:443/path")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "ftp://example.test",
+        "http://user:pass@example.test",
+        "http://example.test:99999",
+        "http://example.test:",
+    ],
+)
+def test_http_endpoint_normalization_rejects_unsafe_or_malformed_urls(raw):
+    with pytest.raises(TargetScopeError):
+        normalize_http_url(raw)

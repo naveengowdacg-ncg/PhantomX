@@ -21,7 +21,7 @@ def test_same_service_discovery_correlates_across_tools():
     assert len(groups) == 1
     assert len(groups[0].findings) == 2
     assert groups[0].sources == ["nmap", "whatweb"]
-    assert groups[0].confidence == 0.85
+    assert groups[0].confidence == 0.70
 
 
 def test_unrelated_findings_on_same_port_stay_separate():

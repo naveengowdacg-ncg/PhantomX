@@ -15,6 +15,14 @@ class NucleiParser:
         "critical": "CRITICAL",
     }
 
+    @staticmethod
+    def _reject_nonfinite(value):
+        raise ValueError(f"Non-finite JSON value: {value}")
+
+    @staticmethod
+    def _text(value, default=""):
+        return value if isinstance(value, str) else default
+
     def parse(self, output, target):
         findings = []
 
@@ -28,31 +36,49 @@ class NucleiParser:
                 continue
 
             try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
+                data = json.loads(line, parse_constant=self._reject_nonfinite)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+            # Scanner output is untrusted. Ignore well-formed JSON values whose
+            # shape is not a Nuclei event instead of aborting the entire scan.
+            if not isinstance(data, dict):
                 continue
 
             info = data.get("info", {})
+            if not isinstance(info, dict):
+                continue
             classification = info.get("classification", {})
+            if not isinstance(classification, dict):
+                classification = {}
 
-            severity = info.get("severity", "info").lower()
-            template_id = data.get("template-id", "")
+            severity = self._text(info.get("severity"), "info").lower()
+            template_id = self._text(data.get("template-id"))
             normalized_template_id = template_id.lower()
 
             tags = info.get("tags", [])
+            if not isinstance(tags, list):
+                tags = []
+            tags = [tag for tag in tags if isinstance(tag, str)]
             result_type = self._classify_result(
                 template_id,
                 tags,
                 severity,
             )
 
-            matched_url = (
-                data.get("matched-at", "")
-                or data.get("url", "")
-                or target
+            matched_url = next(
+                (
+                    value for value in (
+                        data.get("matched-at"), data.get("url"), target,
+                    )
+                    if isinstance(value, str) and value
+                ),
+                target,
             )
 
-            matcher_name = data.get("matcher-name", "")
+            matcher_name = self._text(data.get("matcher-name"))
+            description = self._text(info.get("description"))
+            title = self._text(info.get("name")) or template_id or "Nuclei detection"
 
             # HSTS is relevant to HTTPS, not a plain HTTP response.
             if (
@@ -83,20 +109,22 @@ class NucleiParser:
             metadata = {
                 "template_id": template_id,
                 "classification": result_type,
-                "template": data.get("template", ""),
+                "template": self._text(data.get("template")),
                 "severity": severity,
                 "tags": tags,
-                "description": info.get("description", ""),
-                "matched_at": data.get("matched-at", ""),
-                "url": data.get("url", ""),
-                "host": data.get("host", ""),
-                "port": data.get("port", ""),
-                "scheme": data.get("scheme", ""),
+                "description": description,
+                "matched_at": self._text(data.get("matched-at")),
+                "url": self._text(data.get("url")),
+                "host": self._text(data.get("host")),
+                "port": data.get("port") if isinstance(data.get("port"), (str, int, float)) and not isinstance(data.get("port"), bool) else "",
+                "scheme": self._text(data.get("scheme")),
                 "matcher_name": matcher_name,
                 "type": data.get("type", ""),
                 "cwe_id": classification.get("cwe-id", []),
                 "cve_id": classification.get("cve-id", []),
                 "references": info.get("reference", []),
+                # A template match is a lead for verification, not confirmation.
+                "verification_status": "scanner_match_unverified",
             }
 
             if is_apache_status:
@@ -119,10 +147,7 @@ class NucleiParser:
                             + matcher_name.replace("-", " ").title()
                             if normalized_template_id
                             == "http-missing-security-headers"
-                            else info.get(
-                                "name",
-                                template_id or "Nuclei detection",
-                            )
+                            else title
                         )
                     ),
                     category=result_type,

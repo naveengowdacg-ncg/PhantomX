@@ -5,8 +5,10 @@ import json
 import re
 from pathlib import Path
 
+from core.scope import TargetScopeError, normalize_target
 
-KNOWN_PROFILES = ("passive", "standard", "full")
+
+KNOWN_PROFILES = ("passive", "stealth", "standard", "full", "aggressive")
 DEFAULT_SETTINGS = {
     "default_profile": "standard",
     "reports_dir": "reports",
@@ -69,15 +71,6 @@ def _is_valid_wildcard_hostname(pattern: str) -> bool:
     return _is_valid_hostname(suffix)
 
 
-def _is_valid_ip_address(address: str) -> bool:
-    """Validate an IPv4 or IPv6 address."""
-    try:
-        ipaddress.ip_address(address)
-        return True
-    except ValueError:
-        return False
-
-
 def _is_valid_cidr(cidr: str) -> bool:
     """Validate a CIDR network range (IPv4 or IPv6)."""
     try:
@@ -87,21 +80,51 @@ def _is_valid_cidr(cidr: str) -> bool:
         return False
 
 
-def _is_valid_authorized_target(entry: str) -> bool:
-    """Check if an authorized_targets entry is a valid IP, hostname, CIDR, or wildcard."""
-    entry = entry.strip()
-    if not entry:
-        return False
-    # Order matters: check CIDR before IP (since IP is subset of CIDR syntax)
-    if _is_valid_cidr(entry):
-        return True
-    if _is_valid_ip_address(entry):
-        return True
-    if _is_valid_wildcard_hostname(entry):
-        return True
-    if _is_valid_hostname(entry):
-        return True
-    return False
+def _validate_raw_authorized_target(raw_target: str) -> None:
+    """Validate a raw authorized_targets entry before normalization.
+    
+    Raises SettingsError if the entry is malformed.
+    """
+    target = raw_target.strip()
+    if not target:
+        raise SettingsError("authorized_targets must be a list of non-empty strings.")
+    
+    if target.startswith("*."):
+        suffix = target[2:].rstrip(".")
+        if not suffix:
+            raise SettingsError(f"Invalid wildcard in authorized_targets: {raw_target!r}.")
+        # Validate suffix as hostname
+        if not _is_valid_hostname(suffix):
+            raise SettingsError(f"Invalid wildcard suffix in authorized_targets: {raw_target!r}.")
+        return
+    
+    if "/" in target:
+        # CIDR - will be validated by ip_network later
+        return
+    
+    # For non-wildcard, non-CIDR entries, validate they are valid IPs or hostnames
+    # First check if it looks like an invalid IPv4 (wrong octets or partial)
+    if _IPV4_LIKE.match(target):
+        try:
+            ipaddress.ip_address(target)
+        except ValueError:
+            raise SettingsError(f"Invalid IPv4 address in authorized_targets: {raw_target!r}.")
+        return
+    
+    if _IPV4_PARTIAL.match(target):
+        raise SettingsError(f"Partial IPv4 address not allowed in authorized_targets: {raw_target!r}.")
+    
+    # Check if it looks like an invalid IPv6
+    if _IPV6_LIKE.match(target) and ":" in target:
+        try:
+            ipaddress.ip_address(target)
+        except ValueError:
+            raise SettingsError(f"Invalid IPv6 address in authorized_targets: {raw_target!r}.")
+        return
+    
+    # Otherwise validate as hostname
+    if not _is_valid_hostname(target):
+        raise SettingsError(f"Invalid hostname in authorized_targets: {raw_target!r}.")
 
 
 def load_settings(path="config/settings.json"):
@@ -122,10 +145,19 @@ def load_settings(path="config/settings.json"):
     if not isinstance(settings.get("scope_required"), bool):
         raise SettingsError("scope_required must be true or false.")
 
-    try:
-        max_workers = int(settings.get("max_workers", 4))
-    except (TypeError, ValueError) as exc:
-        raise SettingsError("max_workers must be a positive integer.") from exc
+    max_workers = settings.get("max_workers", 4)
+    if isinstance(max_workers, bool):
+        raise SettingsError("max_workers must be an integer from 1 to 64.")
+    if isinstance(max_workers, str):
+        value = max_workers.strip()
+        if not re.fullmatch(r"[+-]?\d+", value):
+            raise SettingsError("max_workers must be an integer from 1 to 64.")
+        try:
+            max_workers = int(value)
+        except ValueError as exc:
+            raise SettingsError("max_workers must be an integer from 1 to 64.") from exc
+    elif not isinstance(max_workers, int):
+        raise SettingsError("max_workers must be an integer from 1 to 64.")
     if max_workers < 1 or max_workers > 64:
         raise SettingsError("max_workers must be between 1 and 64.")
     settings["max_workers"] = max_workers
@@ -136,15 +168,20 @@ def load_settings(path="config/settings.json"):
     settings["reports_dir"] = reports_dir.strip()
 
     allowed_profiles = settings.get("allowed_profiles")
-    if not isinstance(allowed_profiles, list) or not allowed_profiles:
-        raise SettingsError("allowed_profiles must be a non-empty list.")
+    if (
+        not isinstance(allowed_profiles, list)
+        or not allowed_profiles
+        or any(not isinstance(profile, str) for profile in allowed_profiles)
+    ):
+        raise SettingsError("allowed_profiles must be a non-empty list of profile names.")
     invalid_profiles = [p for p in allowed_profiles if p not in KNOWN_PROFILES]
     if invalid_profiles:
         raise SettingsError(
             "Unknown profile(s) in allowed_profiles: "
             + ", ".join(map(str, invalid_profiles))
         )
-    if settings.get("default_profile") not in allowed_profiles:
+    default_profile = settings.get("default_profile")
+    if not isinstance(default_profile, str) or default_profile not in allowed_profiles:
         raise SettingsError("default_profile must be included in allowed_profiles.")
 
     authorized_targets = settings.get("authorized_targets")
@@ -153,17 +190,34 @@ def load_settings(path="config/settings.json"):
         for target in authorized_targets
     ):
         raise SettingsError("authorized_targets must be a list of non-empty strings.")
-    settings["authorized_targets"] = [target.strip() for target in authorized_targets]
-
-    # Validate each authorized target entry
-    invalid_targets = [
-        t for t in settings["authorized_targets"] if not _is_valid_authorized_target(t)
-    ]
-    if invalid_targets:
-        raise SettingsError(
-            "Invalid authorized_targets entry/entries: "
-            + ", ".join(map(str, invalid_targets))
-            + ". Each entry must be a valid IPv4/IPv6 address, hostname, CIDR range, or wildcard hostname (*.example.com)."
-        )
+    normalized_targets = []
+    for raw_target in authorized_targets:
+        _validate_raw_authorized_target(raw_target)
+        target = raw_target.strip()
+        if target.startswith("*."):
+            suffix = target[2:].rstrip(".")
+            try:
+                target = "*." + normalize_target(suffix)
+            except TargetScopeError as exc:
+                raise SettingsError(
+                    f"Invalid wildcard in authorized_targets: {raw_target!r}."
+                ) from exc
+        else:
+            if "/" in target:
+                try:
+                    target = str(ipaddress.ip_network(target, strict=False))
+                except ValueError as exc:
+                    raise SettingsError(
+                        f"Invalid network in authorized_targets: {raw_target!r}."
+                    ) from exc
+            else:
+                try:
+                    target = normalize_target(target)
+                except TargetScopeError as exc:
+                    raise SettingsError(
+                        f"Invalid entry in authorized_targets: {raw_target!r}."
+                    ) from exc
+        normalized_targets.append(target)
+    settings["authorized_targets"] = normalized_targets
 
     return settings
