@@ -63,17 +63,20 @@ def _matches_scope(target, entry):
         suffix = entry[2:].rstrip(".").lower()
         return target.lower().endswith("." + suffix) and target.lower() != suffix
 
-    try:
-        network = ipaddress.ip_network(entry, strict=False)
-    except ValueError:
-        network = None
-
-    if network is not None:
+    # Only treat as CIDR if explicitly contains a prefix length (e.g., /24)
+    if "/" in entry:
         try:
-            return ipaddress.ip_address(target) in network
+            network = ipaddress.ip_network(entry, strict=False)
         except ValueError:
-            return False
+            network = None
 
+        if network is not None:
+            try:
+                return ipaddress.ip_address(target) in network
+            except ValueError:
+                return False
+
+    # Exact match for IP addresses (including zone IDs) and hostnames
     try:
         normalized_entry = normalize_target(entry)
     except TargetScopeError:
