@@ -454,3 +454,117 @@ def test_scope_validate_url_checks_host_and_accepts_localhost_and_ports():
 def test_http_endpoint_normalization_rejects_unsafe_or_malformed_urls(raw):
     with pytest.raises(TargetScopeError):
         normalize_http_url(raw)
+
+
+# --- Regression tests for adapter scope propagation ---
+
+
+def test_adapter_manager_receives_and_propagates_scope():
+    """AdapterManager should accept scope and pass it to all built-in adapters."""
+    from core.adapter_manager import AdapterManager
+    from core.scope import TargetScope
+
+    configured_scope = TargetScope(True, ["192.168.31.0/24", "lab.test"])
+    mgr = AdapterManager(scope=configured_scope)
+
+    for name, adapter in mgr.adapters.items():
+        assert adapter.scope is configured_scope, f"Adapter {name} did not receive configured scope"
+
+
+def test_adapter_manager_defaults_to_local_scope_when_none_provided():
+    """AdapterManager should fall back to local_only_scope when no scope is given."""
+    from core.adapter_manager import AdapterManager
+    from core.scope import local_only_scope
+
+    mgr = AdapterManager()
+
+    for adapter in mgr.adapters.values():
+        # All adapters should have a scope (the local-only default)
+        assert adapter.scope is not None
+        assert adapter.scope.authorized_targets == ["127.0.0.1", "localhost", "::1"]
+
+
+def test_cidr_authorized_target_accepted_by_all_adapters(tmp_path, monkeypatch):
+    """When 192.168.31.0/24 is configured, 192.168.31.188 should be accepted by all adapters."""
+    import main as main_module
+    from core.scope import TargetScope
+
+    # Mock external tool executables as missing (we only test scope validation)
+    monkeypatch.setattr("shutil.which", lambda _: None)
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({
+        "default_profile": "standard",
+        "allowed_profiles": ["standard"],
+        "authorized_targets": ["127.0.0.1", "localhost", "::1", "192.168.31.0/24"],
+        "scope_required": True,
+    }), encoding="utf-8")
+
+    app = main_module.App(str(settings))
+
+    # Test that the configured scope accepts the target
+    validated = app.scope.validate("192.168.31.188")
+    assert validated == "192.168.31.188"
+
+    # Test that all adapters share the same scope
+    for name, adapter in app.adapter_manager.adapters.items():
+        assert adapter.scope is app.scope, f"Adapter {name} does not share app scope"
+
+    # Test adapter-level scope validation (simulating what happens during scan)
+    for name, adapter in app.adapter_manager.adapters.items():
+        if hasattr(adapter, 'scan'):
+            # Each adapter validates via its own scope, which should now be the configured one
+            try:
+                adapter.scope.validate_scan_target("192.168.31.188", require_resolution=False)
+            except TargetScopeError:
+                pytest.fail(f"Adapter {name} rejected in-scope target 192.168.31.188")
+
+
+def test_out_of_scope_target_rejected_by_all_adapters(tmp_path, monkeypatch):
+    """An out-of-scope target should be rejected by all adapters when scope_required=True."""
+    import main as main_module
+    from core.scope import TargetScope, TargetScopeError
+
+    monkeypatch.setattr("shutil.which", lambda _: None)
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({
+        "default_profile": "standard",
+        "allowed_profiles": ["standard"],
+        "authorized_targets": ["127.0.0.1", "localhost", "::1", "192.168.31.0/24"],
+        "scope_required": True,
+    }), encoding="utf-8")
+
+    app = main_module.App(str(settings))
+
+    # 192.168.32.1 is outside the configured 192.168.31.0/24 range
+    out_of_scope_target = "192.168.32.1"
+
+    # App-level scope should reject it
+    with pytest.raises(TargetScopeError, match="outside configured scope"):
+        app.scope.validate(out_of_scope_target)
+
+    # All adapters should also reject it via their shared scope
+    for name, adapter in app.adapter_manager.adapters.items():
+        with pytest.raises(TargetScopeError, match="outside configured scope"):
+            adapter.scope.validate_scan_target(out_of_scope_target, require_resolution=False)
+
+
+def test_executor_validates_target_with_configured_scope(tmp_path, monkeypatch):
+    """ToolExecutor should validate targets using the configured scope."""
+    from core.executor import ToolExecutor
+    from core.scope import TargetScope, TargetScopeError
+
+    configured_scope = TargetScope(True, ["192.168.31.0/24"])
+    executor = ToolExecutor(logger=None, scope=configured_scope)
+
+    # In-scope target should pass validation (we can't run the tool, but validation happens early)
+    tool = {"name": "nmap", "category": "recon", "executable": "nmap", "args": ["{target}"], "timeout": 120}
+
+    # We can't easily test _run_once without mocking, but we can test the scope directly
+    assert executor.scope is configured_scope
+    assert executor.scope.validate("192.168.31.188") == "192.168.31.188"
+
+    # Out of scope should be rejected
+    with pytest.raises(TargetScopeError, match="outside configured scope"):
+        executor.scope.validate("192.168.32.1")

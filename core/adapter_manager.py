@@ -13,18 +13,19 @@ from modules.gobuster.adapter import GobusterAdapter
 class AdapterManager:
     """Manage specialized tool adapters."""
 
-    def __init__(self):
+    def __init__(self, scope=None):
+        self.scope = scope
         self.adapters = {
-            "nmap": NmapAdapter(),
-            "whatweb": WhatWebAdapter(),
-            "nuclei": NucleiAdapter(),
-            "nikto": NiktoAdapter(),
-            "subfinder": SubfinderAdapter(),
-            "dnsx": DnsxAdapter(),
-            "httpx": HttpxAdapter(),
-            "katana": KatanaAdapter(),
-            "testssl": TestsslAdapter(),
-            "gobuster": GobusterAdapter(),
+            "nmap": NmapAdapter(scope=scope),
+            "whatweb": WhatWebAdapter(scope=scope),
+            "nuclei": NucleiAdapter(scope=scope),
+            "nikto": NiktoAdapter(scope=scope),
+            "subfinder": SubfinderAdapter(scope=scope),
+            "dnsx": DnsxAdapter(scope=scope),
+            "httpx": HttpxAdapter(scope=scope),
+            "katana": KatanaAdapter(scope=scope),
+            "testssl": TestsslAdapter(scope=scope),
+            "gobuster": GobusterAdapter(scope=scope),
         }
 
     def get(self, tool_name):

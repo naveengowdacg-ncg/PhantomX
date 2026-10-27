@@ -31,7 +31,7 @@ def test_app_passes_configured_scope_validator_into_workflow(tmp_path, monkeypat
     monkeypatch.setattr(main_module, "ToolRegistry", lambda: object())
     monkeypatch.setattr(main_module, "get_logger", lambda reports_dir: DummyLogger())
     monkeypatch.setattr(main_module, "ToolExecutor", CapturingExecutor)
-    monkeypatch.setattr(main_module, "AdapterManager", lambda: object())
+    monkeypatch.setattr(main_module, "AdapterManager", lambda scope=None: object())
     monkeypatch.setattr(main_module, "Normalizer", lambda: object())
     monkeypatch.setattr(main_module, "RiskEngine", lambda: object())
     monkeypatch.setattr(main_module, "Reporter", lambda reports_dir: object())

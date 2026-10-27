@@ -76,7 +76,7 @@ class App:
         self.tool_preflight = ToolPreflight()
         self.logger = get_logger(self.settings["reports_dir"])
         self.executor = ToolExecutor(self.logger, scope=self.scope)
-        self.adapter_manager = AdapterManager()
+        self.adapter_manager = AdapterManager(scope=self.scope)
         self.normalizer = Normalizer()
         self.risk = RiskEngine()
 
