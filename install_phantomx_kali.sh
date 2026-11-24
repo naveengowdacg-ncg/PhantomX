@@ -25,6 +25,8 @@
 #   6 = Requirements install failed
 #   7 = Verification failed
 #   8 = Local changes prevent safe update
+#   9 = Backup/verification failed
+#   10 = User cancelled
 
 set -euo pipefail
 
@@ -61,6 +63,7 @@ APT_PACKAGES_TO_INSTALL=()
 SCANNERS_AVAILABLE=()
 SCANNERS_UNAVAILABLE=()
 TEMP_DIRS=()
+EXISTING_INSTALL_ACTION=""
 
 # ──────────────────────────────────────────────────────────────────────
 # Utility Functions
@@ -108,6 +111,42 @@ register_temp_dir() {
     TEMP_DIRS+=("$1")
 }
 
+# Read user input from /dev/tty to support curl | bash
+read_from_tty() {
+    local prompt="$1"
+    local var_name="$2"
+    local input=""
+    
+    if [[ -t 0 ]]; then
+        # Standard interactive terminal
+        read -r -p "$prompt" input
+    else
+        # Running via curl | bash or similar - read from /dev/tty
+        if [[ -e /dev/tty ]]; then
+            read -r -p "$prompt" input < /dev/tty
+        else
+            log_error "No interactive terminal available for prompt"
+            exit 1
+        fi
+    fi
+    
+    printf -v "$var_name" '%s' "$input"
+}
+
+# Confirm action with specific keyword
+confirm_with_keyword() {
+    local prompt="$1"
+    local keyword="$2"
+    local input=""
+    
+    read_from_tty "$prompt" input
+    if [[ "$input" != "$keyword" ]]; then
+        log_warn "Confirmation keyword mismatch. Expected: $keyword"
+        return 1
+    fi
+    return 0
+}
+
 # ──────────────────────────────────────────────────────────────────────
 # Help / Usage
 # ──────────────────────────────────────────────────────────────────────
@@ -135,6 +174,8 @@ Exit codes:
   6 = Requirements install failed
   7 = Verification failed
   8 = Local changes prevent safe update
+  9 = Backup/verification failed
+  10 = User cancelled
 EOF
     exit 0
 }
@@ -196,6 +237,225 @@ check_internet() {
     else
         log_success "Internet reachable"
     fi
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# Existing Installation Detection & Menu
+# ──────────────────────────────────────────────────────────────────────
+
+detect_existing_installation() {
+    if [[ -e "$REPO_DIR" ]]; then
+        if [[ -L "$REPO_DIR" ]]; then
+            log_error "Found symbolic link at $REPO_DIR. Refusing to operate on symlinks."
+            log_error "Please remove or rename the symlink and re-run."
+            exit 1
+        fi
+        if [[ ! -d "$REPO_DIR" ]]; then
+            log_error "Found non-directory file at $REPO_DIR. Refusing to proceed."
+            exit 1
+        fi
+        log_warn "Existing PhantomX installation detected at $REPO_DIR"
+        return 0
+    fi
+    return 1
+}
+
+show_existing_install_menu() {
+    echo
+    echo -e "${C_YELLOW}═══ Existing Installation Detected ═══${C_RESET}"
+    echo "PhantomX is already installed at: $REPO_DIR"
+    echo
+    echo "Please choose an action:"
+    echo "  1) Replace with backup"
+    echo "     Creates a timestamped backup (~/PhantomX.backup-YYYYMMDD-HHMMSS)"
+    echo "     including all project files and virtual environment,"
+    echo "     verifies the backup, then replaces the installation."
+    echo
+    echo "  2) Replace without backup"
+    echo "     Permanently deletes existing project files and virtual environment."
+    echo "     Requires typing 'DELETE' to confirm."
+    echo
+    echo "  3) Uninstall PhantomX"
+    echo "     Removes the PhantomX project directory and local environment/data only."
+    echo "     Does NOT remove shared system packages or unrelated user files."
+    echo "     Requires typing 'UNINSTALL' to confirm."
+    echo
+    echo "  4) Cancel"
+    echo "     Exit without modifying the existing installation."
+    echo
+}
+
+handle_existing_installation() {
+    local choice=""
+    
+    while true; do
+        show_existing_install_menu
+        read_from_tty "Enter choice [1-4]: " choice
+        
+        case "$choice" in
+            1)
+                EXISTING_INSTALL_ACTION="replace_with_backup"
+                return 0
+                ;;
+            2)
+                EXISTING_INSTALL_ACTION="replace_without_backup"
+                return 0
+                ;;
+            3)
+                EXISTING_INSTALL_ACTION="uninstall"
+                return 0
+                ;;
+            4)
+                EXISTING_INSTALL_ACTION="cancel"
+                return 0
+                ;;
+            *)
+                log_warn "Invalid choice. Please enter 1, 2, 3, or 4."
+                ;;
+        esac
+    done
+}
+
+create_backup() {
+    local timestamp
+    timestamp=$(date +%Y%m%d-%H%M%S)
+    local backup_dir="${HOME}/PhantomX.backup-${timestamp}"
+    
+    log_step "Creating backup at $backup_dir"
+    
+    if [[ "${DRY_RUN}" == true ]]; then
+        log_info "[DRY-RUN] Would create backup: $backup_dir"
+        log_info "[DRY-RUN] Would copy: $REPO_DIR -> $backup_dir"
+        return 0
+    fi
+    
+    # Copy entire directory including hidden files
+    if ! cp -a "$REPO_DIR" "$backup_dir"; then
+        log_error "Failed to create backup"
+        return 1
+    fi
+    
+    # Verify backup
+    log_info "Verifying backup..."
+    if [[ ! -d "$backup_dir" ]]; then
+        log_error "Backup directory not found after copy"
+        return 1
+    fi
+    
+    # Check critical files exist in backup
+    local critical_files=(".venv" "requirements.txt" "main.py" "core")
+    for f in "${critical_files[@]}"; do
+        if [[ ! -e "$backup_dir/$f" ]]; then
+            log_warn "Backup verification: $f not found (may be expected if not installed yet)"
+        fi
+    done
+    
+    # Verify backup size is reasonable (at least 1MB)
+    local backup_size
+    backup_size=$(du -sb "$backup_dir" | cut -f1)
+    if [[ $backup_size -lt 1000000 ]]; then
+        log_error "Backup size too small ($backup_size bytes). Backup may be incomplete."
+        rm -rf "$backup_dir"
+        return 1
+    fi
+    
+    log_success "Backup created and verified: $backup_dir (${backup_size} bytes)"
+    echo "$backup_dir"
+    return 0
+}
+
+replace_with_backup() {
+    local backup_dir
+    backup_dir=$(create_backup) || exit 9
+    
+    log_step "Removing original installation"
+    if [[ "${DRY_RUN}" == true ]]; then
+        log_info "[DRY-RUN] Would remove: $REPO_DIR"
+        return 0
+    fi
+    
+    if ! rm -rf "$REPO_DIR"; then
+        log_error "Failed to remove original installation"
+        log_error "Backup preserved at: $backup_dir"
+        exit 9
+    fi
+    
+    log_success "Original installation removed. Backup preserved at: $backup_dir"
+}
+
+replace_without_backup() {
+    log_warn "This will PERMANENTLY DELETE the existing PhantomX installation at $REPO_DIR"
+    log_warn "This action CANNOT be undone."
+    echo
+    
+    if ! confirm_with_keyword "Type 'DELETE' to confirm: " "DELETE"; then
+        log_warn "Confirmation failed. Aborting."
+        exit 10
+    fi
+    
+    log_step "Removing existing installation without backup"
+    if [[ "${DRY_RUN}" == true ]]; then
+        log_info "[DRY-RUN] Would remove: $REPO_DIR"
+        return 0
+    fi
+    
+    if ! rm -rf "$REPO_DIR"; then
+        log_error "Failed to remove existing installation"
+        exit 9
+    fi
+    
+    log_success "Existing installation removed"
+}
+
+uninstall_phantomx() {
+    log_warn "This will UNINSTALL PhantomX from $REPO_DIR"
+    log_warn "This removes the project directory and virtual environment only."
+    log_warn "System packages (installed via APT) will NOT be removed."
+    echo
+    
+    if ! confirm_with_keyword "Type 'UNINSTALL' to confirm: " "UNINSTALL"; then
+        log_warn "Confirmation failed. Aborting."
+        exit 10
+    fi
+    
+    log_step "Uninstalling PhantomX"
+    if [[ "${DRY_RUN}" == true ]]; then
+        log_info "[DRY-RUN] Would remove: $REPO_DIR"
+        return 0
+    fi
+    
+    if ! rm -rf "$REPO_DIR"; then
+        log_error "Failed to remove PhantomX installation"
+        exit 9
+    fi
+    
+    log_success "PhantomX uninstalled successfully"
+    echo
+    echo "Note: System packages installed via APT (nmap, nuclei, etc.) were not removed."
+    echo "To remove them, run: sudo apt-get remove <package-names>"
+    exit 0
+}
+
+handle_existing_install_action() {
+    case "$EXISTING_INSTALL_ACTION" in
+        replace_with_backup)
+            replace_with_backup
+            ;;
+        replace_without_backup)
+            replace_without_backup
+            ;;
+        uninstall)
+            uninstall_phantomx
+            ;;
+        cancel)
+            log_info "Cancelled by user. Exiting."
+            exit 10
+            ;;
+        *)
+            log_error "Unknown action: $EXISTING_INSTALL_ACTION"
+            exit 1
+            ;;
+    esac
 }
 
 # ──────────────────────────────────────────────────────────────────────
@@ -301,7 +561,6 @@ install_subfinder() {
     # Verify checksum (SHA256 from release page) - MANDATORY
     log_info "Verifying checksum..."
     local sha256_url="https://github.com/projectdiscovery/subfinder/releases/download/${version}/subfinder_${version#v}_checksums.txt"
-    local expected_sha256
     expected_sha256=$(curl -sL "$sha256_url" | grep "linux_amd64.zip" | awk '{print $1}')
     if [[ -z "$expected_sha256" ]]; then
         log_error "Could not retrieve expected SHA256 checksum for Subfinder"
@@ -427,7 +686,7 @@ setup_python_environment() {
     # Activate and upgrade pip
     # shellcheck source=/dev/null
     source "$VENV_DIR/bin/activate"
-    run_cmd pip install --upgrade pip setuptools wheel
+    run_cmd python -m pip install --upgrade pip setuptools wheel
 
     # Install requirements
     local req_file="${REPO_DIR}/requirements.txt"
@@ -435,13 +694,13 @@ setup_python_environment() {
         log_warn "No requirements.txt found at $req_file"
         if [[ -f "${REPO_DIR}/pyproject.toml" ]]; then
             log_info "Found pyproject.toml, installing from it..."
-            run_cmd pip install -e "${REPO_DIR}"
+            run_cmd python -m pip install -e "${REPO_DIR}"
         else
             log_warn "No pyproject.toml either; skipping Python deps"
         fi
     else
         log_info "Installing Python requirements from $req_file..."
-        run_cmd pip install -r "$req_file"
+        run_cmd python -m pip install -r "$req_file"
     fi
 
     log_success "Python environment ready"
@@ -459,7 +718,7 @@ verify_installation() {
 
     # Core imports
     log_info "Testing core imports..."
-    run_cmd python3 -c "
+    run_cmd python -c "
 import sys
 import json
 import sqlite3
@@ -471,7 +730,7 @@ print('Core imports OK')
 
     # PhantomX imports
     log_info "Testing PhantomX imports..."
-    run_cmd python3 -c "
+    run_cmd python -c "
 import sys
 sys.path.insert(0, '$REPO_DIR')
 from core.models import Session, ToolResult, Finding
@@ -493,7 +752,7 @@ print('PhantomX imports OK')
 
     # Check adapters
     log_info "Checking scanner adapters..."
-    run_cmd python3 -c "
+    run_cmd python -c "
 import sys
 sys.path.insert(0, '$REPO_DIR')
 from core.adapter_manager import AdapterManager
@@ -519,7 +778,7 @@ for name in ['nmap','whatweb','nikto','nuclei','subfinder','dnsx','httpx','katan
 
     # Quick functionality test (no scan)
     log_info "Running quick functionality test..."
-    run_cmd python3 -c "
+    run_cmd python -c "
 import sys
 sys.path.insert(0, '$REPO_DIR')
 from core.scope import TargetScope
@@ -530,7 +789,7 @@ print('Scope validation OK')
 
     # Verify Nikto handling
     log_info "Verifying Nikto handling..."
-    run_cmd python3 -c "
+    run_cmd python -c "
 import sys
 sys.path.insert(0, '$REPO_DIR')
 from modules.nikto.parser import NiktoParser
@@ -552,18 +811,36 @@ for f in findings:
     print(f'  - {f.title} (verification: {f.metadata.get(\"verification_status\")})')
 "
 
-    # Quick functionality test (no scan)
-    log_info "Running quick functionality test..."
-    run_cmd python3 -c "
-import sys
-sys.path.insert(0, '$REPO_DIR')
-from core.scope import TargetScope
-scope = TargetScope(True, ['127.0.0.1', 'localhost', '::1'])
-assert scope.validate('127.0.0.1') == '127.0.0.1'
-print('Scope validation OK')
-"
-
     log_success "All verification checks passed"
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# Automatic CLI Launch
+# ──────────────────────────────────────────────────────────────────────
+
+launch_cli() {
+    log_step "Launching PhantomX CLI"
+    
+    local cli_entrypoint="${REPO_DIR}/main.py"
+    
+    if [[ ! -f "$cli_entrypoint" ]]; then
+        log_error "CLI entrypoint not found: $cli_entrypoint"
+        log_error "Installation may have failed. Cannot launch CLI."
+        return 1
+    fi
+    
+    log_info "Starting PhantomX CLI..."
+    echo -e "${C_CYAN}═══ PhantomX CLI ═══${C_RESET}"
+    echo
+    
+    # Launch CLI with the virtual environment's Python
+    # Use exec to replace the shell process
+    if [[ "${DRY_RUN}" == true ]]; then
+        log_info "[DRY-RUN] Would launch: ${VENV_DIR}/bin/python $cli_entrypoint"
+        return 0
+    fi
+    
+    exec "${VENV_DIR}/bin/python" "$cli_entrypoint"
 }
 
 # ──────────────────────────────────────────────────────────────────────
@@ -622,6 +899,14 @@ main() {
         echo
     fi
 
+    # Check for existing installation FIRST
+    if detect_existing_installation; then
+        handle_existing_installation
+        handle_existing_install_action
+        # For replace_with_backup and replace_without_backup, continue to fresh install
+        # For uninstall and cancel, the functions exit directly
+    fi
+
     check_os
     check_user
     check_internet
@@ -632,6 +917,9 @@ main() {
     setup_python_environment
     verify_installation
     print_summary
+
+    # Automatically launch CLI after successful installation
+    launch_cli
 
     log_success "All done!"
 }
