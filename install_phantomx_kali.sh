@@ -507,9 +507,9 @@ for name in ['nmap','whatweb','nikto','nuclei','subfinder','dnsx','httpx','katan
     log_info "Checking scanner executables..."
     local available=0 total=0
     for cmd in nmap whatweb nikto nuclei subfinder dnsx httpx-toolkit katana testssl testssl.sh gobuster; do
-        ((total++))
+        ((total+=1))
         if command -v "$cmd" >/dev/null 2>&1; then
-            ((available++))
+            ((available+=1))
             echo "  $cmd: FOUND"
         else
             echo "  $cmd: MISSING"
