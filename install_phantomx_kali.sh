@@ -112,9 +112,9 @@ register_temp_dir() {
 }
 
 # Read user input from /dev/tty to support curl | bash
+# Prints the input to stdout for capture
 read_from_tty() {
     local prompt="$1"
-    local var_name="$2"
     local input=""
     
     if [[ -t 0 ]]; then
@@ -130,7 +130,7 @@ read_from_tty() {
         fi
     fi
     
-    printf -v "$var_name" '%s' "$input"
+    printf '%s' "$input"
 }
 
 # Confirm action with specific keyword
@@ -139,7 +139,7 @@ confirm_with_keyword() {
     local keyword="$2"
     local input=""
     
-    read_from_tty "$prompt" input
+    input=$(read_from_tty "$prompt")
     if [[ "$input" != "$keyword" ]]; then
         log_warn "Confirmation keyword mismatch. Expected: $keyword"
         return 1
@@ -290,7 +290,7 @@ handle_existing_installation() {
     
     while true; do
         show_existing_install_menu
-        read_from_tty "Enter choice [1-4]: " choice
+        choice=$(read_from_tty "Enter choice [1-4]: ")
         
         case "$choice" in
             1)
